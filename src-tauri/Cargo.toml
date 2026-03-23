@@ -1,0 +1,23 @@
+[package]
+name = "vk-caption-ai"
+version = "2.0.0"
+description = "Tauri приложение для автогенерации описаний к фото VK"
+authors = ["you"]
+edition = "2024"
+
+[build-dependencies]
+tauri-build = { version = "2.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.4", features = [] }
+tauri-plugin-store = "2.4"
+tauri-plugin-opener = "2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+base64 = "0.22"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

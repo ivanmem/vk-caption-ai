@@ -1,0 +1,37 @@
+{
+  "name": "vk-caption-ai",
+  "version": "2.0.0",
+  "description": "Tauri приложение для автогенерации описаний к фото VK через LMStudio",
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-store": "^2.4.2",
+    "pinia": "^3.0.4",
+    "pinia-plugin-persistedstate": "^4.7.1",
+    "vue": "^3.5.31",
+    "vue-router": "^5.0.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "@types/node": "^24.1.0",
+    "@vicons/ionicons5": "^0.13.0",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "naive-ui": "^2.44.1",
+    "sass": "^1.98.0",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.3",
+    "vue-tsc": "^3.2.6"
+  },
+  "engines": {
+    "node": ">=24.14.0"
+  }
+}
