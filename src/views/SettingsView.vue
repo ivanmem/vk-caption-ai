@@ -44,7 +44,7 @@
               v-model:value="appStore.settings.lmstudioModel"
               :options="modelOptions"
               :loading="loadingModels"
-              placeholder="zai-org/glm-4.6v-flash"
+              placeholder="google/gemma-3-12b"
               clearable
               @focus="handleModelsFetch"
             />
@@ -72,6 +72,16 @@
                 Обратный порядок (сначала новые)
               </n-checkbox>
             </n-space>
+          </n-form-item>
+
+          <n-form-item label="Температура (креативность)" path="temperature">
+            <div style="display: flex; align-items: center; width: 100%; gap: 16px;">
+              <n-slider v-model:value="appStore.settings.temperature" :min="0.0" :max="2.0" :step="0.05" style="flex: 1;" />
+              <n-input-number v-model:value="appStore.settings.temperature" :min="0.0" :max="2.0" :step="0.05" size="small" style="width: 100px" />
+            </div>
+            <template #feedback>
+              Влияет на креативность ответов. Значение по умолчанию: 1.1
+            </template>
           </n-form-item>
 
           <n-form-item label="Системный промпт для нейросети" path="systemPrompt">
@@ -128,6 +138,8 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NInputNumber,
+  NSlider,
   NButton,
   NAlert,
   NDivider,
@@ -175,7 +187,6 @@ async function handleSave(): Promise<void> {
     await formRef.value?.validate();
     const s = appStore.settings;
     const systemPrompt = systemPromptDraft.value.trim() || DEFAULT_SYSTEM_PROMPT;
-    // При сохранении: если совпадает с дефолтом — в store пустая строка
     const systemPromptToStore = systemPrompt === DEFAULT_SYSTEM_PROMPT ? '' : systemPrompt;
     await invoke('save_settings', {
       settings: {
@@ -183,9 +194,9 @@ async function handleSave(): Promise<void> {
         vk_album_id: s.vkAlbumId,
         vk_owner_id: s.vkOwnerId,
         lmstudio_model: s.lmstudioModel,
-        system_prompt: systemPrompt,
         process_with_caption: !!s.processPhotosWithCaption,
         rev_order: !!s.revOrder,
+        temperature: s.temperature ?? 1.1,
       },
     });
     appStore.saveSettings({ ...s, systemPrompt: systemPromptToStore });
@@ -205,11 +216,12 @@ function handleReset(): void {
     vkToken: '',
     vkAlbumId: '',
     vkOwnerId: '',
-    lmstudioModel: 'zai-org/glm-4.6v-flash',
+    lmstudioModel: 'google/gemma-3-12b',
     processingMode: appStore.settings.processingMode,
     systemPrompt: '',
     processPhotosWithCaption: false,
     revOrder: true,
+    temperature: 1.1,
   };
   systemPromptDraft.value = DEFAULT_SYSTEM_PROMPT;
 }

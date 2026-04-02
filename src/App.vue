@@ -77,8 +77,9 @@ onMounted(async () => {
           vk_album_id: s.vkAlbumId,
           vk_owner_id: s.vkOwnerId,
           lmstudio_model: s.lmstudioModel,
-          system_prompt: s.systemPrompt,
           process_with_caption: !!s.processPhotosWithCaption,
+          rev_order: s.revOrder !== false,
+          temperature: s.temperature ?? 1.1,
         },
       });
     } catch (e) {

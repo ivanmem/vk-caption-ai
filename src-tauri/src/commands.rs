@@ -5,20 +5,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, State};
 use tauri_plugin_store::StoreExt;
 
-pub const DEFAULT_SYSTEM_PROMPT: &str = "Ты — бот для поиска текста на стикерах.\n\
-Верни ТОЛЬКО JSON-массив из 1-3 строк.\n\n\
-Инструкция:\n\
-1. Найди текст на картинке. Если он есть, напиши его ПЕРВЫМ элементом ДОСЛОВНО.\n\
-2. Добавь 1-2 коротких тега для поиска (эмоция, реакция, смысл цитаты).\n\
-3. НЕ описывай то, что видишь (никаких \"комната\", \"персонаж\", \"скриншот\", \"интерьер\", \"окно\", \"изображение\").\n\
-4. Если текста нет — пиши только теги.\n\n\
-Примеры:\n\
-Вход: [Картинка с текстом \"Ухади\" и злой девочкой]\n\
-Выход: [\"Ухади\", \"злость\", \"прогоняет\"]\n\n\
-Вход: [Картинка с задумчивым парнем и цитатой о жизни]\n\
-Выход: [\"Цитата о жизни...\", \"философия\", \"грусть\"]\n\n\
-Вход: [Персонаж просто смеется, текста нет]\n\
-Выход: [\"смех\", \"ору\"]";
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -26,17 +13,18 @@ pub struct AppSettings {
     pub vk_album_id: String,
     pub vk_owner_id: String,
     pub lmstudio_model: String,
-    #[serde(default = "default_system_prompt")]
-    pub system_prompt: String,
     #[serde(default)]
     pub process_with_caption: bool,
     #[serde(default = "default_true")]
     pub rev_order: bool,
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
 }
 
-fn default_system_prompt() -> String {
-    DEFAULT_SYSTEM_PROMPT.to_string()
+fn default_temperature() -> f32 {
+    1.1
 }
+
 
 fn default_true() -> bool {
     true
@@ -48,10 +36,10 @@ impl Default for AppSettings {
             vk_token: String::new(),
             vk_album_id: String::new(),
             vk_owner_id: String::new(),
-            lmstudio_model: "zai-org/glm-4.6v-flash".to_string(),
-            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            lmstudio_model: "google/gemma-3-12b".to_string(),
             process_with_caption: false,
             rev_order: true,
+            temperature: 1.1,
         }
     }
 }
@@ -118,10 +106,7 @@ pub fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<AppState>, mut settings: AppSettings) -> Result<(), String> {
-    if settings.system_prompt.trim().is_empty() {
-        settings.system_prompt = DEFAULT_SYSTEM_PROMPT.to_string();
-    }
+pub fn save_settings(app: AppHandle, state: State<AppState>, settings: AppSettings) -> Result<(), String> {
     let mut current = state.settings.lock().map_err(|e| e.to_string())?;
     *current = settings.clone();
     drop(current);
@@ -265,24 +250,21 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
 }
 
 #[tauri::command]
-pub async fn generate_caption(state: State<'_, AppState>, image_url: String, user_comment: Option<String>) -> Result<String, String> {
-    let (model, system_prompt) = {
+pub async fn generate_caption(state: State<'_, AppState>, image_url: String, system_prompt: String, user_comment: Option<String>) -> Result<String, String> {
+    let (model, temperature) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.lmstudio_model.clone(), s.system_prompt.clone())
+        (s.lmstudio_model.clone(), s.temperature)
     };
     let client = state.client.clone();
     let bytes = client.get(&image_url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
     let b64 = general_purpose::STANDARD.encode(&bytes);
     let data_uri = format!("data:image/jpeg;base64,{}", b64);
 
-    const SYSTEM_RETRY: &str = "Ты вернул неправильный формат. Нужен JSON-массив строк.\n\
-Правильный формат — ТОЛЬКО это, без лишних слов:\n\
-[\"элемент 1\", \"элемент 2\", \"элемент 3\"]\n\
-Верни массив для картинки.";
+    const SYSTEM_RETRY: &str = "Ответ должен быть строго JSON-массивом строк. Ничего кроме этого. Пример: [\"тег1\", \"тег2\"]";
 
     let base_user_text = match &user_comment {
-        Some(c) if !c.trim().is_empty() => format!("Дополнительно: {}\nИзвлеки текст со стикера и дай теги. Верни JSON-массив.", c),
-        _ => "Извлеки текст со стикера и дай теги. Верни JSON-массив.".to_string(),
+        Some(c) if !c.trim().is_empty() => format!("Дополнительно: {}\nВнимание: верни ТОЛЬКО JSON-массив.", c),
+        _ => "Внимание: верни ТОЛЬКО JSON-массив.".to_string(),
     };
 
     let mut last_caption = String::new();
@@ -303,8 +285,7 @@ pub async fn generate_caption(state: State<'_, AppState>, image_url: String, use
                     {"type": "image_url", "image_url": {"url": data_uri}}
                 ]}
             ],
-            "temperature": 0.3,
-            "max_tokens": 300
+            "temperature": temperature,
         });
 
         let resp = client.post("http://localhost:1234/v1/chat/completions")

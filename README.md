@@ -32,7 +32,7 @@
 ### 📋 Требования
 - **Node.js** >= 24.14
 - **Rust** >= 1.70
-- **LM Studio** с загруженной Vision-моделью `zai-org/glm-4.6v-flash`
+- **LM Studio** с загруженной Vision-моделью (`zai-org/glm-4.6v-flash`, `google/gemma-3-12b`, `google/gemma-4-26b-a4b`)
 - **VK Access Token** с правами `photos` (получите на [vkhost.github.io](https://vkhost.github.io/))
 
 ### 🛠️ Установка и запуск
@@ -68,7 +68,7 @@ npm run tauri:build
 В разделе **«Настройки»** внутри приложения заполните:
 - **VK Token**: Ваш персональный токен доступа.
 - **VK Album ID**: Числовой ID альбома, который хотите обработать.
-- **LMStudio Model**: Идентификатор модели `zai-org/glm-4.6v-flash`.
+- **LMStudio Model**: Идентификатор модели.
 - **Processing Mode**: Выберите «Ручной», если хотите проверять каждое описание перед публикацией.
 
 ## 📝 Автоматизация стикеров

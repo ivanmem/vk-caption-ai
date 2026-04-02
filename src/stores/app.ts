@@ -13,23 +13,21 @@ export interface PhotoTask {
   previousCaption?: string;
 }
 
-export const DEFAULT_SYSTEM_PROMPT = `Ты — бот для поиска текста на стикерах.
-Верни ТОЛЬКО JSON-массив из 1-3 строк.
+export const DEFAULT_SYSTEM_PROMPT = `Вытащи текст со стикера (если есть) и 1-3 слова-тега (эмоция, реакция, смысл).
+Верни ТОЛЬКО валидный JSON-массив из строк. Отвечай ИСКЛЮЧИТЕЛЬНО на русском языке.
 
-Инструкция:
-1. Найди текст на картинке. Если он есть, напиши его ПЕРВЫМ элементом ДОСЛОВНО.
-2. Добавь 1-2 коротких тега для поиска (эмоция, реакция, смысл цитаты).
-3. НЕ описывай то, что видишь (никаких "комната", "персонаж", "скриншот", "интерьер", "окно", "изображение").
-4. Если текста нет — пиши только теги.
+Правила:
+1. Пиши ТОЛЬКО на русском. Последним элементом массива ВСЕГДА добавляй один наиболее подходящий смайлик (эмодзи).
+2. Первый элемент: если на стикере есть текст — напиши его дословно. Если текста нет — первым элементом должна быть ГЛАВНАЯ ЭМОЦИЯ или СМЫСЛ (например: "радость", "грусть", "гнев", "злость", "удивление", "шок", "страх", "отвращение", "тошнота", "смех", "любовь", "одобрение", "усталость", "раздражение", "сарказм", "плач", "агрессия", "паника", "тильт", "безысходность", "безумие", "отчаяние", "боль", "тлен", "смущение", "разочарование").
+3. ВАЖНО: Анализируй саму картинку, а не только текст! Если текст радостный, а персонаж выглядит жутко, крипово, плачет или страдает — это сарказм. В таком случае теги должны описывать РЕАЛЬНУЮ картинку (например: "отчаяние", "ужас", "безумие", "ирония"), а не слепо верить позитивному тексту.
+4. Категорически ЗАПРЕЩЕНО описывать, ЧТО нарисовано (запрещены слова вроде "аниме", "девушка", "кот", "человек", "фон"). Описывай только чувства, реакции и суть!
+5. Никакого Markdown ('\`\`\`json' и т.д.), возвращай только чистый код массива.
 
-Примеры:
-Выход: ["Ухади", "злость", "прогоняет"]
+Пример (без текста на картинке):
+["отвращение", "тошнота", "фу", "🤢"]
 
-Вход: [Картинка с задумчивым аниме-парнем и текстом о жизни]
-Выход: ["Цитата о жизни...", "философия", "грусть"]
-
-Вход: [Персонаж просто смеется, текста нет]
-Выход: ["смех", "ору", "база"]`;
+Пример (с текстом на картинке):
+["Ухади", "злость", "прогоняет", "😡"]`;
 
 export interface AppSettings {
   vkToken: string;
@@ -40,6 +38,7 @@ export interface AppSettings {
   systemPrompt: string;
   processPhotosWithCaption?: boolean;
   revOrder?: boolean;
+  temperature?: number;
 }
 
 export interface ManualReviewPayload {
@@ -58,6 +57,7 @@ export const useAppStore = defineStore('app', () => {
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     processPhotosWithCaption: false,
     revOrder: true,
+    temperature: 1.1,
   });
 
   const photos = ref<PhotoTask[]>([]);
@@ -116,9 +116,12 @@ export const useAppStore = defineStore('app', () => {
       ? `${userComment}`
       : undefined;
 
+    const systemPrompt = settings.value.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+
     try {
       const caption = await invoke<string>('generate_caption', {
         imageUrl: photo.image_url,
+        systemPrompt,
         userComment: prompt ?? null,
       });
       console.log(`[AppStore] processPhoto success for photo ${photo.id}`, caption);
@@ -398,6 +401,9 @@ export const useAppStore = defineStore('app', () => {
     afterHydrate: (ctx) => {
       if (!ctx.store.settings.systemPrompt) {
         ctx.store.settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+      }
+      if (typeof ctx.store.settings.temperature === 'undefined') {
+        ctx.store.settings.temperature = 1.1;
       }
     },
   },
