@@ -23,9 +23,15 @@
           </n-form-item>
 
           <n-form-item label="VK Album ID" path="vkAlbumId">
-            <n-input
+            <n-select
               v-model:value="appStore.settings.vkAlbumId"
-              placeholder="100"
+              filterable
+              tag
+              :options="albumOptions"
+              :loading="loadingAlbums"
+              :render-label="renderAlbumLabel"
+              placeholder="100 (или выберите)"
+              @focus="handleAlbumsFetch"
             />
           </n-form-item>
 
@@ -130,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, h } from 'vue';
 import type { FormInst, FormRules } from 'naive-ui';
 import {
   NCard,
@@ -148,6 +154,8 @@ import {
   NRadio,
   NCheckbox,
   NAutoComplete,
+  NSelect,
+  NAvatar,
   useMessage,
 } from 'naive-ui';
 import { invoke } from '@tauri-apps/api/core';
@@ -159,6 +167,8 @@ const formRef = ref<FormInst | null>(null);
 const saving = ref(false);
 const loadingModels = ref(false);
 const availableModels = ref<string[]>([]);
+const loadingAlbums = ref(false);
+const albumOptions = ref<Array<{ label: string; value: string; thumb?: string; size?: number }>>([]);
 
 // Локальное поле для редактирования — не трогает store напрямую
 const systemPromptDraft = ref(appStore.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT);
@@ -176,6 +186,29 @@ const modelOptions = computed(() => {
     };
   });
 });
+
+interface VkAlbum {
+  id: number;
+  title: string;
+  size: number;
+  thumb_src?: string;
+}
+
+const renderAlbumLabel = (option: { label: string; value: string; thumb?: string; size?: number }) => {
+  return h(
+    'div',
+    { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+    [
+      option.thumb
+        ? h(NAvatar, { src: option.thumb, size: 'small', style: { flexShrink: 0 } })
+        : h(NAvatar, { size: 'small', style: { flexShrink: 0 } }),
+      h('div', null, [
+        h('div', null, option.label),
+        option.size !== undefined ? h('div', { style: { fontSize: '12px', color: '#888' } }, `Фото: ${option.size}`) : null,
+      ])
+    ]
+  );
+};
 
 onMounted(() => {
   handleModelsFetch();
@@ -239,6 +272,74 @@ async function handleModelsFetch(): Promise<void> {
     console.warn('Failed to fetch models from LMStudio:', e);
   } finally {
     loadingModels.value = false;
+  }
+}
+
+function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    
+    (window as unknown as Record<string, (data: T) => void>)[callbackName] = (data: T) => {
+      resolve(data);
+      document.body.removeChild(script);
+      delete (window as unknown as Record<string, (data: T) => void>)[callbackName];
+    };
+    
+    script.src = url;
+    script.onerror = () => {
+      reject(new Error('JSONP failed'));
+      document.body.removeChild(script);
+      delete (window as unknown as Record<string, (data: T) => void>)[callbackName];
+    };
+    
+    document.body.appendChild(script);
+  });
+}
+
+async function handleAlbumsFetch(): Promise<void> {
+  if (loadingAlbums.value || !appStore.settings.vkToken) {
+    return;
+  }
+
+  loadingAlbums.value = true;
+
+  try {
+    const fnName = 'vk_cb_' + Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+    const token = appStore.settings.vkToken;
+    let url = `https://api.vk.com/method/photos.getAlbums?v=5.199&need_covers=1&need_system=1&albums_ids=-15&access_token=${token}&callback=${fnName}`;
+    
+    if (appStore.settings.vkOwnerId) {
+      url += `&owner_id=${appStore.settings.vkOwnerId}`;
+    }
+
+    interface VkResponse {
+      response?: {
+        items: VkAlbum[];
+      };
+      error?: {
+        error_msg: string;
+      };
+    }
+
+    const response = await fetchJsonp<VkResponse>(url, fnName);
+    
+    if (response.response && response.response.items) {
+      albumOptions.value = response.response.items.map((album: VkAlbum) => {
+        return {
+          label: album.title,
+          value: String(album.id),
+          thumb: album.thumb_src,
+          size: album.size
+        };
+      });
+    } else if (response.error) {
+      console.warn('VK API error:', response.error);
+      message.error(`Ошибка VK: ${response.error.error_msg}`);
+    }
+  } catch (e) {
+    console.error('Failed to fetch albums:', e);
+  } finally {
+    loadingAlbums.value = false;
   }
 }
 </script>
