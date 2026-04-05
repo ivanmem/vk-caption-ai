@@ -3,7 +3,8 @@
     <n-card title="Настройки приложения" class="settings-card">
       <n-space vertical size="large">
         <n-alert type="info" title="LMStudio">
-          Убедитесь, что LMStudio запущен и vision модель загружена перед началом работы.
+          Убедитесь, что LMStudio запущен и vision модель загружена перед
+          началом работы.
         </n-alert>
 
         <n-form
@@ -20,6 +21,27 @@
               placeholder="vk1.a..."
               show-password-on="click"
             />
+          </n-form-item>
+
+          <n-form-item label="VK Token" path="vkToken">
+            <n-alert type="info" :bordered="false">
+              <template #header>Как получить VK Token</template>
+              <ol>
+                <li>
+                  Перейдите на
+                  <n-a href="https://vkhost.github.io/" target="_blank"
+                    >vkhost.github.io</n-a
+                  >
+                </li>
+                <li>
+                  Выберите <strong>VK Admin</strong> (или другое приложение)
+                </li>
+                <li>
+                  Нажмите <strong>Разрешить</strong> и скопируйте токен из
+                  адресной строки
+                </li>
+              </ol>
+            </n-alert>
           </n-form-item>
 
           <n-form-item label="VK Album ID" path="vkAlbumId">
@@ -41,7 +63,8 @@
               placeholder="Опционально"
             />
             <template #feedback>
-              ID владельца, если альбом не ваш. Оставьте пустым для своих альбомов.
+              ID владельца, если альбом не ваш. Оставьте пустым для своих
+              альбомов.
             </template>
           </n-form-item>
 
@@ -71,7 +94,9 @@
 
           <n-form-item label="Загрузка фото">
             <n-space vertical>
-              <n-checkbox v-model:checked="appStore.settings.processPhotosWithCaption">
+              <n-checkbox
+                v-model:checked="appStore.settings.processPhotosWithCaption"
+              >
                 Обрабатывать фото с уже заполненным описанием
               </n-checkbox>
               <n-checkbox v-model:checked="appStore.settings.revOrder">
@@ -81,16 +106,34 @@
           </n-form-item>
 
           <n-form-item label="Температура (креативность)" path="temperature">
-            <div style="display: flex; align-items: center; width: 100%; gap: 16px;">
-              <n-slider v-model:value="appStore.settings.temperature" :min="0.0" :max="2.0" :step="0.05" style="flex: 1;" />
-              <n-input-number v-model:value="appStore.settings.temperature" :min="0.0" :max="2.0" :step="0.05" size="small" style="width: 100px" />
+            <div
+              style="display: flex; align-items: center; width: 100%; gap: 16px"
+            >
+              <n-slider
+                v-model:value="appStore.settings.temperature"
+                :min="0.0"
+                :max="2.0"
+                :step="0.05"
+                style="flex: 1"
+              />
+              <n-input-number
+                v-model:value="appStore.settings.temperature"
+                :min="0.0"
+                :max="2.0"
+                :step="0.05"
+                size="small"
+                style="width: 100px"
+              />
             </div>
             <template #feedback>
               Влияет на креативность ответов. Значение по умолчанию: 1.1
             </template>
           </n-form-item>
 
-          <n-form-item label="Системный промпт для нейросети" path="systemPrompt">
+          <n-form-item
+            label="Системный промпт для нейросети"
+            path="systemPrompt"
+          >
             <n-input
               v-model:value="systemPromptDraft"
               type="textarea"
@@ -98,14 +141,13 @@
               placeholder="Оставьте пустым для сброса к стандартному промпту"
             />
             <template #feedback>
-              Инструкция для модели. Если очистить и сохранить — вернётся стандартный промпт.
+              Инструкция для модели. Если очистить и сохранить — вернётся
+              стандартный промпт.
             </template>
           </n-form-item>
 
           <n-space justify="end">
-            <n-button @click="handleReset">
-              Сбросить
-            </n-button>
+            <n-button @click="handleReset"> Сбросить </n-button>
             <n-button type="primary" :loading="saving" @click="handleSave">
               Сохранить
             </n-button>
@@ -114,19 +156,16 @@
 
         <n-divider />
 
-        <!-- Информация -->
+        <!-- Требования к модели -->
         <n-space vertical>
-          <h3>Как получить VK Token</h3>
-          <ol>
-            <li>Перейдите на <n-a href="https://vkhost.github.io/" target="_blank">vkhost.github.io</n-a></li>
-            <li>Выберите <strong>VK Admin</strong> (или другое приложение)</li>
-            <li>Нажмите <strong>Разрешить</strong> и скопируйте токен из адресной строки</li>
-          </ol>
-
           <h3>Требования к модели</h3>
           <ul>
-            <li>Модель должна поддерживать vision (распознавание изображений)</li>
-            <li>Рекомендуемая модель: <strong>zai-org/glm-4.6v-flash</strong></li>
+            <li>
+              Модель должна поддерживать vision (распознавание изображений)
+            </li>
+            <li>
+              Рекомендуемая модель: <strong>zai-org/glm-4.6v-flash</strong>
+            </li>
             <li>LMStudio должен быть запущен на порту 1234</li>
           </ul>
         </n-space>
@@ -136,8 +175,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, h } from 'vue';
-import type { FormInst, FormRules } from 'naive-ui';
+import { ref, onMounted, computed, h } from "vue";
+import type { FormInst, FormRules } from "naive-ui";
 import {
   NCard,
   NSpace,
@@ -157,9 +196,9 @@ import {
   NSelect,
   NAvatar,
   useMessage,
-} from 'naive-ui';
-import { invoke } from '@tauri-apps/api/core';
-import { useAppStore, DEFAULT_SYSTEM_PROMPT } from '@/stores/app';
+} from "naive-ui";
+import { invoke } from "@tauri-apps/api/core";
+import { useAppStore, DEFAULT_SYSTEM_PROMPT } from "@/stores/app";
 
 const message = useMessage();
 const appStore = useAppStore();
@@ -168,14 +207,18 @@ const saving = ref(false);
 const loadingModels = ref(false);
 const availableModels = ref<string[]>([]);
 const loadingAlbums = ref(false);
-const albumOptions = ref<Array<{ label: string; value: string; thumb?: string; size?: number }>>([]);
+const albumOptions = ref<
+  Array<{ label: string; value: string; thumb?: string; size?: number }>
+>([]);
 
 // Локальное поле для редактирования — не трогает store напрямую
-const systemPromptDraft = ref(appStore.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT);
+const systemPromptDraft = ref(
+  appStore.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+);
 
 const rules: FormRules = {
-  vkToken: { required: true, message: 'Введите VK Token', trigger: 'blur' },
-  vkAlbumId: { required: true, message: 'Введите ID альбома', trigger: 'blur' },
+  vkToken: { required: true, message: "Введите VK Token", trigger: "blur" },
+  vkAlbumId: { required: true, message: "Введите ID альбома", trigger: "blur" },
 };
 
 const modelOptions = computed(() => {
@@ -194,19 +237,34 @@ interface VkAlbum {
   thumb_src?: string;
 }
 
-const renderAlbumLabel = (option: { label: string; value: string; thumb?: string; size?: number }) => {
+const renderAlbumLabel = (option: {
+  label: string;
+  value: string;
+  thumb?: string;
+  size?: number;
+}) => {
   return h(
-    'div',
-    { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+    "div",
+    { style: { display: "flex", alignItems: "center", gap: "8px" } },
     [
       option.thumb
-        ? h(NAvatar, { src: option.thumb, size: 'small', style: { flexShrink: 0 } })
-        : h(NAvatar, { size: 'small', style: { flexShrink: 0 } }),
-      h('div', null, [
-        h('div', null, option.label),
-        option.size !== undefined ? h('div', { style: { fontSize: '12px', color: '#888' } }, `Фото: ${option.size}`) : null,
-      ])
-    ]
+        ? h(NAvatar, {
+            src: option.thumb,
+            size: "small",
+            style: { flexShrink: 0 },
+          })
+        : h(NAvatar, { size: "small", style: { flexShrink: 0 } }),
+      h("div", null, [
+        h("div", null, option.label),
+        option.size !== undefined
+          ? h(
+              "div",
+              { style: { fontSize: "12px", color: "#888" } },
+              `Фото: ${option.size}`,
+            )
+          : null,
+      ]),
+    ],
   );
 };
 
@@ -219,9 +277,11 @@ async function handleSave(): Promise<void> {
   try {
     await formRef.value?.validate();
     const s = appStore.settings;
-    const systemPrompt = systemPromptDraft.value.trim() || DEFAULT_SYSTEM_PROMPT;
-    const systemPromptToStore = systemPrompt === DEFAULT_SYSTEM_PROMPT ? '' : systemPrompt;
-    await invoke('save_settings', {
+    const systemPrompt =
+      systemPromptDraft.value.trim() || DEFAULT_SYSTEM_PROMPT;
+    const systemPromptToStore =
+      systemPrompt === DEFAULT_SYSTEM_PROMPT ? "" : systemPrompt;
+    await invoke("save_settings", {
       settings: {
         vk_token: s.vkToken,
         vk_album_id: s.vkAlbumId,
@@ -234,9 +294,9 @@ async function handleSave(): Promise<void> {
     });
     appStore.saveSettings({ ...s, systemPrompt: systemPromptToStore });
     systemPromptDraft.value = systemPrompt;
-    message.success('Настройки сохранены');
+    message.success("Настройки сохранены");
   } catch (e) {
-    if (typeof e === 'string') {
+    if (typeof e === "string") {
       message.error(e);
     }
   } finally {
@@ -246,12 +306,12 @@ async function handleSave(): Promise<void> {
 
 function handleReset(): void {
   appStore.settings = {
-    vkToken: '',
-    vkAlbumId: '',
-    vkOwnerId: '',
-    lmstudioModel: 'google/gemma-3-12b',
+    vkToken: "",
+    vkAlbumId: "",
+    vkOwnerId: "",
+    lmstudioModel: "google/gemma-3-12b",
     processingMode: appStore.settings.processingMode,
-    systemPrompt: '',
+    systemPrompt: "",
     processPhotosWithCaption: false,
     revOrder: true,
     temperature: 1.1,
@@ -266,10 +326,10 @@ async function handleModelsFetch(): Promise<void> {
 
   loadingModels.value = true;
   try {
-    const models = await invoke<string[]>('list_lmstudio_models');
+    const models = await invoke<string[]>("list_lmstudio_models");
     availableModels.value = models;
   } catch (e) {
-    console.warn('Failed to fetch models from LMStudio:', e);
+    console.warn("Failed to fetch models from LMStudio:", e);
   } finally {
     loadingModels.value = false;
   }
@@ -277,21 +337,27 @@ async function handleModelsFetch(): Promise<void> {
 
 function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    
-    (window as unknown as Record<string, (data: T) => void>)[callbackName] = (data: T) => {
+    const script = document.createElement("script");
+
+    (window as unknown as Record<string, (data: T) => void>)[callbackName] = (
+      data: T,
+    ) => {
       resolve(data);
       document.body.removeChild(script);
-      delete (window as unknown as Record<string, (data: T) => void>)[callbackName];
+      delete (window as unknown as Record<string, (data: T) => void>)[
+        callbackName
+      ];
     };
-    
+
     script.src = url;
     script.onerror = () => {
-      reject(new Error('JSONP failed'));
+      reject(new Error("JSONP failed"));
       document.body.removeChild(script);
-      delete (window as unknown as Record<string, (data: T) => void>)[callbackName];
+      delete (window as unknown as Record<string, (data: T) => void>)[
+        callbackName
+      ];
     };
-    
+
     document.body.appendChild(script);
   });
 }
@@ -304,10 +370,13 @@ async function handleAlbumsFetch(): Promise<void> {
   loadingAlbums.value = true;
 
   try {
-    const fnName = 'vk_cb_' + Date.now().toString() + Math.floor(Math.random() * 1000).toString();
+    const fnName =
+      "vk_cb_" +
+      Date.now().toString() +
+      Math.floor(Math.random() * 1000).toString();
     const token = appStore.settings.vkToken;
     let url = `https://api.vk.com/method/photos.getAlbums?v=5.199&need_covers=1&need_system=1&albums_ids=-15&access_token=${token}&callback=${fnName}`;
-    
+
     if (appStore.settings.vkOwnerId) {
       url += `&owner_id=${appStore.settings.vkOwnerId}`;
     }
@@ -322,22 +391,22 @@ async function handleAlbumsFetch(): Promise<void> {
     }
 
     const response = await fetchJsonp<VkResponse>(url, fnName);
-    
+
     if (response.response && response.response.items) {
       albumOptions.value = response.response.items.map((album: VkAlbum) => {
         return {
           label: album.title,
           value: String(album.id),
           thumb: album.thumb_src,
-          size: album.size
+          size: album.size,
         };
       });
     } else if (response.error) {
-      console.warn('VK API error:', response.error);
+      console.warn("VK API error:", response.error);
       message.error(`Ошибка VK: ${response.error.error_msg}`);
     }
   } catch (e) {
-    console.error('Failed to fetch albums:', e);
+    console.error("Failed to fetch albums:", e);
   } finally {
     loadingAlbums.value = false;
   }
@@ -363,7 +432,8 @@ h3 {
   color: var(--n-text-color);
 }
 
-ol, ul {
+ol,
+ul {
   margin-left: $spacing-lg;
   color: var(--n-text-color);
 

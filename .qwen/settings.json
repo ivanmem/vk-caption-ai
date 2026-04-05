@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npm create *)",
       "Bash(npm init *)",
-      "Bash(mkdir *)"
+      "Bash(mkdir *)",
+      "Bash(del *)"
     ]
   },
   "$version": 3

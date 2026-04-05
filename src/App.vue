@@ -6,7 +6,7 @@
           <n-layout-header class="app-header" bordered>
             <div class="header-content">
               <div class="logo" @click="$router.push('/')">
-                <n-icon :component="CameraIcon" size="28" color="#18a058" />
+                <img src="@/assets/app-icon.svg" alt="VK Caption AI" class="app-logo" />
                 <span class="title">VK Caption AI</span>
               </div>
               <n-space>
@@ -55,7 +55,7 @@ import {
   NSpace,
   darkTheme
 } from 'naive-ui';
-import { CameraOutline as CameraIcon, MoonOutline as MoonIcon, SunnyOutline as SunIcon } from '@vicons/ionicons5';
+import { MoonOutline as MoonIcon, SunnyOutline as SunIcon } from '@vicons/ionicons5';
 import { useThemeStore } from '@/stores/theme';
 import { useAppStore } from '@/stores/app';
 import { invoke } from '@tauri-apps/api/core';
@@ -125,8 +125,14 @@ function toggleTheme(): void {
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   cursor: pointer;
+
+  .app-logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+  }
 
   .title {
     font-size: 20px;

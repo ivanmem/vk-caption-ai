@@ -1,0 +1,43 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" rx="24" fill="#0f172a" />
+
+  <!-- Main card -->
+  <rect x="20" y="24" width="88" height="80" rx="12" fill="#1e293b" />
+
+  <!-- Image area -->
+  <rect x="24" y="28" width="80" height="44" rx="8" fill="#334155" />
+  <path d="M26 66 L44 42 L60 60 L78 40 L102 66 Z" fill="#3b82f6" />
+  <circle cx="92" cy="38" r="5" fill="#fde047" />
+
+  <!-- Caption (integrated, not separate bubble) -->
+  <g stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <line x1="28" y1="78" x2="96" y2="78" />
+    <line x1="28" y1="86" x2="88" y2="86" />
+    <line x1="28" y1="94" x2="72" y2="94" />
+  </g>
+
+  <!-- AI overlay (processing effect, not icon) -->
+  <g stroke="#8b5cf6" stroke-width="2" stroke-linecap="round">
+    <circle cx="64" cy="50" r="18" fill="none" />
+    <circle cx="64" cy="50" r="2" fill="#8b5cf6" />
+
+    <circle cx="64" cy="32" r="2" />
+    <circle cx="82" cy="50" r="2" />
+    <circle cx="64" cy="68" r="2" />
+    <circle cx="46" cy="50" r="2" />
+
+    <line x1="64" y1="50" x2="64" y2="32" />
+    <line x1="64" y1="50" x2="82" y2="50" />
+    <line x1="64" y1="50" x2="64" y2="68" />
+    <line x1="64" y1="50" x2="46" y2="50" />
+  </g>
+
+  <!-- VK badge (corrected, using the provided reference) -->
+  <g transform="translate(16, 16) scale(0.28)">
+    <rect width="100" height="100" rx="28" fill="#0077FF" />
+    <path
+      d="M53.7085 72.042C30.9168 72.042 17.9169 56.417 17.3752 30.417H28.7919C29.1669 49.5003 37.5834 57.5836 44.25 59.2503V30.417H55.0004V46.8752C61.5837 46.1669 68.4995 38.667 70.8329 30.417H81.5832C79.7915 40.5837 72.2915 48.0836 66.9582 51.1669C72.2915 53.6669 80.8336 60.2086 84.0836 72.042H72.2499C69.7082 64.1253 63.3754 58.0003 55.0004 57.1669V72.042H53.7085Z"
+      fill="white" />
+  </g>
+</svg>
