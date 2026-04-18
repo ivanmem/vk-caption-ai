@@ -17,6 +17,12 @@
                   Главная
                 </n-button>
                 <n-button
+                  :type="route.name === 'organizer' ? 'primary' : 'default'"
+                  @click="$router.push('/organizer')"
+                >
+                  Распределение
+                </n-button>
+                <n-button
                   :type="route.name === 'settings' ? 'primary' : 'default'"
                   @click="$router.push('/settings')"
                 >

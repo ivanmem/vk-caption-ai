@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod commands;
+mod organizer;
 
 use commands::{AppSettings, AppState};
 use tauri::Manager;
@@ -10,6 +11,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Восстанавливаем настройки из store при старте
             if let Some(store) = app.get_store("settings") {
@@ -32,6 +34,9 @@ fn main() {
             commands::generate_caption,
             commands::save_photo_caption,
             commands::list_lmstudio_models,
+            organizer::organizer_list_images,
+            organizer::organizer_classify_image,
+            organizer::organizer_move_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

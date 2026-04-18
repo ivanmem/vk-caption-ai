@@ -88,7 +88,6 @@ impl Default for AppState {
         // Используем стандартный клиент с таймаутами. 
         // Принудительный HTTP/1.1 мог вызвать проблемы с VK API.
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| Client::new());
 
