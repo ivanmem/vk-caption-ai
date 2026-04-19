@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, ref, toRaw } from 'vue';
+import { computed, ref, toRaw, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 
 // ─────────────────────────── Типы ───────────────────────────
@@ -91,21 +91,121 @@ interface ImageFileDto {
 const DEFAULT_TEMPLATE_NAME = 'default';
 const STORAGE_KEY = 'vk-caption-ai-organizer';
 
+/**
+ * Задержка перед фактической записью в `localStorage`. Любая правка формы
+ * или мутация в горячем цикле обработки лишь перезапускает таймер — реальный
+ * `JSON.stringify` всего состояния выполняется максимум один раз за окно.
+ * 600 мс — компромисс между «успеваем сохраниться при быстром закрытии» и
+ * «UI не клинит на длинных очередях, где статусы меняются десятками в секунду».
+ */
+const PERSIST_DEBOUNCE_MS = 600;
+
+/**
+ * Глобальный «громкий» режим логирования горячего цикла обработки. Когда true —
+ * пишем подробности про каждый файл (raw-длина, matched-папка, перемещения,
+ * подробные тайминги стадий). Поставить `false` в продакшене или временно для
+ * тяжёлых очередей: даже простые `console.log` в DevTools синхронно блокируют
+ * UI на больших объёмах.
+ */
+const DEBUG_LOG = false;
+
+/** То, что мы реально кладём в `localStorage` (без `raw`-полей у images). */
+interface PersistedStateShape {
+  tasks: OrganizerTask[];
+  activeTaskId: string | null;
+  templates: Record<string, OrganizerSettings>;
+  activeTemplateName: string;
+  showThumbnails: boolean;
+  showImagesList: boolean;
+}
+
+/**
+ * Готовит «лёгкую» копию задач для записи в localStorage: целиком отбрасывает
+ * массив `images` у каждой задачи и развязывает Vue-прокси через `toRaw`.
+ *
+ * Почему именно так: статусы файлов меняются десятками в секунду в горячем
+ * цикле, а массив на 300–500 объектов — это десятки–сотни килобайт JSON.
+ * Хранить его смысла нет: при следующем запуске задачи Rust заново
+ * перечитывает папку (`organizer_list_images`), а сохранённые статусы после
+ * перезапуска всё равно врут (файл уже мог быть перемещён вне приложения).
+ * Сводная статистика (`stats`, `currentIndex`) остаётся в задаче и переживает
+ * рестарт — этого достаточно, чтобы видеть «история обработки: 350 → 30 → 0».
+ */
+function stripPersistTasks(tasks: OrganizerTask[]): OrganizerTask[] {
+  return tasks.map((task) => ({ ...toRaw(task), images: [] }));
+}
+
+/**
+ * Считывает сохранённое состояние из `localStorage` ровно один раз —
+ * на этапе создания стора. Возвращает `null`, если в хранилище ничего нет
+ * или формат повреждён: в таком случае стор поднимется со значениями
+ * по умолчанию.
+ */
+function readPersistedState(): PersistedStateShape | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<PersistedStateShape>;
+    return {
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+      activeTaskId: typeof parsed.activeTaskId === 'string' ? parsed.activeTaskId : null,
+      templates: parsed.templates && typeof parsed.templates === 'object'
+        ? parsed.templates as Record<string, OrganizerSettings>
+        : { [DEFAULT_TEMPLATE_NAME]: createDefaultSettings() },
+      activeTemplateName: typeof parsed.activeTemplateName === 'string'
+        ? parsed.activeTemplateName
+        : DEFAULT_TEMPLATE_NAME,
+      showThumbnails: typeof parsed.showThumbnails === 'boolean' ? parsed.showThumbnails : false,
+      showImagesList: typeof parsed.showImagesList === 'boolean' ? parsed.showImagesList : true,
+    };
+  } catch (err) {
+    console.warn('[Organizer] Не удалось прочитать сохранённое состояние:', err);
+    return null;
+  }
+}
+
 // ─────────────────────────── Стор ───────────────────────────
 
 export const useOrganizerStore = defineStore('organizer', () => {
   migrateLegacyStorage();
+  // Гидратация выполнена ВРУЧНУЮ (без pinia-plugin-persistedstate), потому что
+  // плагин пересериализовывает весь pick-state на каждую реактивную мутацию.
+  // На этой странице мутаций десятки в секунду (статусы файлов в горячем цикле,
+  // символ-за-символом ввод в textarea и т. д.) — JSON.stringify тяжёлой
+  // очереди подвешивал главный поток. Теперь сохраняем дебаунсом ниже.
+  const hydrated = readPersistedState();
+  const sanitized = hydrated ? sanitizePersistedState(hydrated) : null;
 
   // ── Шаблоны (пресеты конфигурации) ──
-  const templates = ref<Record<string, OrganizerSettings>>({
-    [DEFAULT_TEMPLATE_NAME]: createDefaultSettings(),
-  });
-  const activeTemplateName = ref<string>(DEFAULT_TEMPLATE_NAME);
+  const templates = ref<Record<string, OrganizerSettings>>(
+    sanitized?.templates ?? { [DEFAULT_TEMPLATE_NAME]: createDefaultSettings() },
+  );
+  const activeTemplateName = ref<string>(sanitized?.activeTemplateName ?? DEFAULT_TEMPLATE_NAME);
+
+  // ── UI-настройки ──
+  /**
+   * Показывать ли миниатюры в списке файлов. Их генерация в Rust (decode +
+   * resize webp/png ≈ десятки–сотни мс на файл) и последующая декодировка
+   * в WebView2 ощутимо нагружают CPU — пользователь должен иметь возможность
+   * быстро отключить превью на больших папках, если UI начинает подтормаживать.
+   */
+  const showThumbnails = ref<boolean>(sanitized?.showThumbnails ?? false);
+  /**
+   * Показывать ли вообще список файлов задачи. Он реализован через
+   * `n-virtual-list` и при больших объёмах (сотни/тысячи элементов) сам по
+   * себе может проседать (массовый mount/unmount строк, layout-расчёты на
+   * resize-observer и т.п.). Удобный аварийный тумблер для диагностики и
+   * повседневной работы — список, по сути, опционален.
+   */
+  const showImagesList = ref<boolean>(sanitized?.showImagesList ?? true);
 
   // ── Очередь задач ──
-  const tasks = ref<OrganizerTask[]>([]);
+  const tasks = ref<OrganizerTask[]>(sanitized?.tasks ?? []);
   /** Задача, которая открыта в форме (может отличаться от выполняемой). */
-  const activeTaskId = ref<string | null>(null);
+  const activeTaskId = ref<string | null>(sanitized?.activeTaskId ?? null);
   /** Задача, которую сейчас обрабатывает модель. */
   const runningTaskId = ref<string | null>(null);
   /**
@@ -429,7 +529,10 @@ export const useOrganizerStore = defineStore('organizer', () => {
 
       for (let i = 0; i < task.images.length; i++) {
         if (controller.signal.aborted) {
-          console.log('[Organizer] Aborted before image', i);
+          if (DEBUG_LOG) {
+            console.log('[Organizer] Aborted before image', i);
+          }
+
           task.status = 'cancelled';
           break;
         }
@@ -437,7 +540,19 @@ export const useOrganizerStore = defineStore('organizer', () => {
         task.currentIndex = i;
         const image = task.images[i];
         image.status = 'processing';
-        console.log(`[Organizer] [${task.label}] Classifying ${image.name}`);
+        if (DEBUG_LOG) {
+          console.log(`[Organizer] [${task.label}] Classifying ${image.name}`);
+        }
+
+        // Точные тайминги стадий одной итерации, чтобы вычислить, что съедает
+        // главный поток. Все измерения через performance.now() — он не блокирует.
+        const tStart = performance.now();
+        let tAfterInvoke = tStart;
+        let tAfterApplyRaw = tStart;
+        let tAfterMoveCall = tStart;
+        let tAfterApplyFinal = tStart;
+        let rawLen = 0;
+        let stepBranch: 'moved' | 'skipped-moved' | 'skipped-inplace' | 'error' | 'aborted' = 'moved';
 
         try {
           const result = await raceAbort(
@@ -450,9 +565,22 @@ export const useOrganizerStore = defineStore('organizer', () => {
             }),
             controller.signal,
           );
+          tAfterInvoke = performance.now();
+          rawLen = result.raw?.length ?? 0;
           image.raw = result.raw;
-          console.log(`[Organizer] [${task.label}] Raw answer:`, JSON.stringify(result.raw));
-          console.log(`[Organizer] [${task.label}] Matched folder:`, result.folder);
+          tAfterApplyRaw = performance.now();
+          // ВНИМАНИЕ: сюда раньше валились console.log с полным `result.raw` (часто
+          // десятки KB reasoning_content от LMStudio). Каждый такой лог в WebView2
+          // DevTools синхронно блокирует UI на сотни мс — это и был один из главных
+          // источников лагов. Теперь логируем кратко: только длину сырого ответа
+          // и подобранную папку. Если нужен полный raw для отладки — он лежит
+          // в `image.raw` и виден в DevTools через инспекцию состояния стора.
+          if (DEBUG_LOG) {
+            console.log(
+              `[Organizer] [${task.label}] ${image.name}: rawLen=${result.raw?.length ?? 0}, ` +
+              `matched=${result.matched}, folder=${result.folder ?? '—'}`,
+            );
+          }
 
           if (!result.raw || !result.raw.trim()) {
             throw new Error('Модель вернула пустой ответ. Проверьте, что модель vision и поддерживает выбранный формат.');
@@ -469,33 +597,46 @@ export const useOrganizerStore = defineStore('organizer', () => {
                 }),
                 controller.signal,
               );
+              tAfterMoveCall = performance.now();
               image.targetFolder = target;
               image.movedTo = moved;
               image.status = 'skipped';
               task.stats.skipped++;
-              console.log(`[Organizer] [${task.label}] ${image.name} → ${target} (unsorted)`);
+              tAfterApplyFinal = performance.now();
+              stepBranch = 'skipped-moved';
+              if (DEBUG_LOG) {
+                console.log(`[Organizer] [${task.label}] ${image.name} → ${target} (unsorted)`);
+              }
             } else {
+              tAfterMoveCall = tAfterApplyRaw;
               image.status = 'skipped';
               task.stats.skipped++;
-              console.log(`[Organizer] [${task.label}] ${image.name}: SKIP (left in place)`);
+              tAfterApplyFinal = performance.now();
+              stepBranch = 'skipped-inplace';
+              if (DEBUG_LOG) {
+                console.log(`[Organizer] [${task.label}] ${image.name}: SKIP (left in place)`);
+              }
             }
-
-            continue;
+          } else {
+            const moved = await raceAbort(
+              invoke<string>('organizer_move_file', {
+                filePath: image.path,
+                baseFolder: baseDest,
+                subFolder: result.folder,
+              }),
+              controller.signal,
+            );
+            tAfterMoveCall = performance.now();
+            image.targetFolder = result.folder;
+            image.movedTo = moved;
+            image.status = 'moved';
+            task.stats.moved++;
+            tAfterApplyFinal = performance.now();
+            stepBranch = 'moved';
+            if (DEBUG_LOG) {
+              console.log(`[Organizer] [${task.label}] ${image.name} → ${result.folder} (${moved})`);
+            }
           }
-
-          const moved = await raceAbort(
-            invoke<string>('organizer_move_file', {
-              filePath: image.path,
-              baseFolder: baseDest,
-              subFolder: result.folder,
-            }),
-            controller.signal,
-          );
-          image.targetFolder = result.folder;
-          image.movedTo = moved;
-          image.status = 'moved';
-          task.stats.moved++;
-          console.log(`[Organizer] [${task.label}] ${image.name} → ${result.folder} (${moved})`);
         } catch (err) {
           if (isAbortError(err)) {
             // Пользователь нажал «Остановить». Текущий файл по факту не
@@ -503,14 +644,38 @@ export const useOrganizerStore = defineStore('organizer', () => {
             // как cancelled и выходим из цикла мгновенно.
             image.status = 'pending';
             task.status = 'cancelled';
-            console.log(`[Organizer] [${task.label}] Aborted mid-image: ${image.name}`);
+            stepBranch = 'aborted';
+            if (DEBUG_LOG) {
+              console.log(`[Organizer] [${task.label}] Aborted mid-image: ${image.name}`);
+            }
+
             break;
           }
 
           image.status = 'error';
           image.error = err instanceof Error ? err.message : String(err);
           task.stats.failed++;
+          stepBranch = 'error';
           console.error(`[Organizer] [${task.label}] Error processing ${image.name}:`, err);
+        }
+
+        // Сводный замер: одна строка на каждый файл, какой бы веткой он ни ушёл.
+        // Это нужно, чтобы понять, что именно блокирует UI каждую итерацию.
+        // ВАЖНО: лог дорог — `console.log` в DevTools синхронно блокирует UI
+        // на сотни мс при сотнях итераций подряд, поэтому держим его за
+        // глобальным флагом DEBUG_LOG. Сами тайминги собираем всегда — на
+        // случай, если флаг включат, не придётся переделывать ветви.
+        const tEnd = performance.now();
+        if (DEBUG_LOG) {
+          console.log(
+            `[Organizer][step] ${image.name} (${stepBranch}): ` +
+            `classify=${(tAfterInvoke - tStart).toFixed(0)}ms ` +
+            `applyRaw=${(tAfterApplyRaw - tAfterInvoke).toFixed(0)}ms ` +
+            `move=${(tAfterMoveCall - tAfterApplyRaw).toFixed(0)}ms ` +
+            `applyFinal=${(tAfterApplyFinal - tAfterMoveCall).toFixed(0)}ms ` +
+            `iterTotal=${(tEnd - tStart).toFixed(0)}ms ` +
+            `rawLen=${rawLen}`,
+          );
         }
       }
 
@@ -619,6 +784,80 @@ export const useOrganizerStore = defineStore('organizer', () => {
     }
   }
 
+  // ── Дебаунс-сохранение в localStorage ──
+  // Глубокий watcher срабатывает один раз за тик Vue даже при пачке
+  // мутаций; внутри мы лишь перезапускаем таймер, поэтому фактический
+  // JSON.stringify случается максимум один раз за PERSIST_DEBOUNCE_MS.
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function persistNow(): void {
+    persistTimer = null;
+    try {
+      const payload: PersistedStateShape = {
+        templates: toRaw(templates.value),
+        activeTemplateName: activeTemplateName.value,
+        tasks: stripPersistTasks(tasks.value),
+        activeTaskId: activeTaskId.value,
+        showThumbnails: showThumbnails.value,
+        showImagesList: showImagesList.value,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      console.error('[Organizer] Persist write failed:', err);
+    }
+  }
+
+  function schedulePersist(): void {
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer);
+    }
+
+    persistTimer = setTimeout(persistNow, PERSIST_DEBOUNCE_MS);
+  }
+
+  // Watcher строится поверх «проекции» состояния: getter обращается ко всем
+  // полям, которые мы реально пишем в localStorage, и НЕ касается `task.images`.
+  // Vue отслеживает только зависимости, прочитанные внутри геттера, поэтому
+  // мутации статусов файлов в горячем цикле (image.status, image.raw,
+  // image.movedTo …) не дёргают сейв вообще. Это убирает основной источник
+  // фоновой нагрузки на UI во время обработки очереди — задача может крутиться
+  // часами, а localStorage будет писаться только когда пользователь правит
+  // форму, переключает задачу или меняется метастатистика задачи.
+  watch(
+    () => ({
+      templates: templates.value,
+      activeTemplateName: activeTemplateName.value,
+      activeTaskId: activeTaskId.value,
+      showThumbnails: showThumbnails.value,
+      showImagesList: showImagesList.value,
+      tasksMeta: tasks.value.map((t) => ({
+        id: t.id,
+        label: t.label,
+        templateName: t.templateName,
+        status: t.status,
+        currentIndex: t.currentIndex,
+        stats: t.stats,
+        config: t.config,
+        createdAt: t.createdAt,
+        startedAt: t.startedAt,
+        finishedAt: t.finishedAt,
+        errorMessage: t.errorMessage,
+      })),
+    }),
+    schedulePersist,
+    { deep: true },
+  );
+
+  if (typeof window !== 'undefined') {
+    // На закрытии окна сбрасываем хвост, чтобы не потерять последнюю правку.
+    window.addEventListener('beforeunload', () => {
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistNow();
+      }
+    });
+  }
+
   return {
     // шаблоны
     templates,
@@ -656,40 +895,32 @@ export const useOrganizerStore = defineStore('organizer', () => {
     activeImage,
     progress,
 
+    // ui-настройки
+    showThumbnails,
+    showImagesList,
+
     // вспомогательное
     isGeneratingFolders,
     generateFolders,
   };
-}, {
-  persist: {
-    key: STORAGE_KEY,
-    pick: ['templates', 'activeTemplateName', 'tasks', 'activeTaskId'],
-    afterHydrate(ctx) {
-      // После рестарта приложения никакая задача физически не может быть в
-      // статусе «processing» — приведём такие в «cancelled». Заодно почистим
-      // зависшие image.status === 'processing' и проверим валидность activeTaskId.
-      sanitizePersistedState(ctx.store as unknown as PersistedStateShape);
-    },
-  },
 });
-
-interface PersistedStateShape {
-  tasks: OrganizerTask[];
-  activeTaskId: string | null;
-}
 
 /**
  * Чинит состояние очереди после восстановления из localStorage.
- * Вызывается ровно один раз — в `afterHydrate` плагина персистентности.
+ * Вызывается ровно один раз — на этапе создания стора, ДО присваивания refs.
  *
- * `runningTaskId` и `abortController` намеренно не входят в `pick`, поэтому
+ * `runningTaskId` и `abortController` намеренно не сохраняются, поэтому
  * после рестарта они равны начальным `null` — отдельно сбрасывать не нужно.
+ *
+ * Мутирует переданный объект на месте и возвращает его же — экономит
+ * лишние аллокации на старте, при том что объект свежеспаршен из JSON
+ * и нигде ещё не используется.
  */
-function sanitizePersistedState(store: PersistedStateShape): void {
+function sanitizePersistedState(state: PersistedStateShape): PersistedStateShape {
   let touchedTasks = 0;
   let touchedImages = 0;
 
-  for (const task of store.tasks) {
+  for (const task of state.tasks) {
     if (task.status === 'processing') {
       task.status = 'cancelled';
       task.errorMessage ??= 'Обработка прервана перезапуском приложения.';
@@ -715,9 +946,9 @@ function sanitizePersistedState(store: PersistedStateShape): void {
 
   // Если активная задача указывает в пустоту (например, её удалили в другой
   // вкладке или хранилище повреждено) — закроем форму на «шаблон».
-  if (store.activeTaskId && !store.tasks.some((t) => t.id === store.activeTaskId)) {
-    console.warn('[Organizer] activeTaskId points to a missing task, resetting:', store.activeTaskId);
-    store.activeTaskId = null;
+  if (state.activeTaskId && !state.tasks.some((t) => t.id === state.activeTaskId)) {
+    console.warn('[Organizer] activeTaskId points to a missing task, resetting:', state.activeTaskId);
+    state.activeTaskId = null;
   }
 
   if (touchedTasks > 0 || touchedImages > 0) {
@@ -725,6 +956,8 @@ function sanitizePersistedState(store: PersistedStateShape): void {
       `[Organizer] Sanitized state after restart: tasks=${touchedTasks}, images=${touchedImages}.`,
     );
   }
+
+  return state;
 }
 
 /**

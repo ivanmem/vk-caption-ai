@@ -38,6 +38,7 @@ fn main() {
             organizer::organizer_classify_image,
             organizer::organizer_generate_folders,
             organizer::organizer_move_file,
+            organizer::organizer_get_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

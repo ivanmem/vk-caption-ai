@@ -13,6 +13,12 @@ use crate::commands::AppState;
 const MAX_IMAGE_SIDE: u32 = 1280;
 /// Качество JPEG при перекодировании. 85 — оптимум по размеру/качеству для классификации.
 const JPEG_QUALITY: u8 = 85;
+/// Максимальная сторона миниатюры, отдаваемой в UI. Превью 96px достаточно
+/// для иконки 56×56 на любом DPI и при этом весит единицы килобайт.
+const THUMBNAIL_MAX_SIDE: u32 = 112;
+/// Качество JPEG для миниатюр. 70 — почти неразличимо глазом на таком размере,
+/// но даёт ~3× компрессии относительно 85.
+const THUMBNAIL_JPEG_QUALITY: u8 = 70;
 
 // ─────────────────────────── Типы ───────────────────────────
 
@@ -347,6 +353,30 @@ pub async fn organizer_generate_folders(
     Ok(folders)
 }
 
+/// Возвращает крошечную JPEG-миниатюру файла в виде data-URL (`data:image/jpeg;base64,…`).
+///
+/// На больших списках (сотни webp/png по несколько мегабайт) браузер задыхается,
+/// если подсовывать ему полные файлы через `convertFileSrc` — декодирование
+/// происходит в WebView2 на главном UI-потоке. Готовая миниатюра 96×96 в JPEG
+/// весит единицы КБ и декодируется мгновенно.
+#[tauri::command]
+pub async fn organizer_get_thumbnail(file_path: String) -> Result<String, String> {
+    // Чтение и пережатие могут быть тяжёлыми (HEIC/огромный PNG) — уносим
+    // в blocking-пул, чтобы не подвешивать tauri runtime.
+    tauri::async_runtime::spawn_blocking(move || {
+        let raw_bytes = std::fs::read(&file_path)
+            .map_err(|e| format!("Не удалось прочитать файл «{}»: {}", file_path, e))?;
+
+        let jpeg = prepare_image_jpeg_with(&raw_bytes, THUMBNAIL_MAX_SIDE, THUMBNAIL_JPEG_QUALITY)
+            .map_err(|e| format!("Не удалось сделать миниатюру «{}»: {}", file_path, e))?;
+
+        let b64 = general_purpose::STANDARD.encode(&jpeg);
+        Ok(format!("data:image/jpeg;base64,{}", b64))
+    })
+    .await
+    .map_err(|e| format!("Поток миниатюры упал: {}", e))?
+}
+
 /// Перемещает файл в подпапку относительно базовой директории.
 /// Если файл с таким именем уже существует — добавляет суффикс `_1`, `_2`, …
 /// Возвращает итоговый абсолютный путь.
@@ -418,6 +448,12 @@ pub fn organizer_move_file(
 /// Декодирует исходные байты картинки, при необходимости уменьшает до `max_side`
 /// по большей стороне и перекодирует в JPEG. Возвращает свежие JPEG-байты.
 fn prepare_image_jpeg(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
+    prepare_image_jpeg_with(bytes, max_side, JPEG_QUALITY)
+}
+
+/// Версия `prepare_image_jpeg` с настраиваемым качеством — нужна для миниатюр,
+/// где не жалко агрессивно жать.
+fn prepare_image_jpeg_with(bytes: &[u8], max_side: u32, quality: u8) -> Result<Vec<u8>, String> {
     let reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| format!("не удалось определить формат: {}", e))?;
@@ -438,7 +474,7 @@ fn prepare_image_jpeg(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
     // Приводим к RGB, чтобы JPEG-энкодер не ругался на альфа/палитру.
     let rgb = resized.to_rgb8();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len() / 4);
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY);
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
     image::DynamicImage::ImageRgb8(rgb)
         .write_with_encoder(encoder)
         .map_err(|e| format!("кодирование JPEG не удалось: {}", e))?;

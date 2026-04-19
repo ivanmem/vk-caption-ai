@@ -1,5 +1,5 @@
 <template>
-  <div class="organizer-view">
+  <div class="organizer-view" :class="{ 'organizer-view--running': isProcessing }">
     <div class="organizer-layout">
       <!-- ── Левая часть: форма ── -->
       <n-card :title="cardTitle" class="form-card">
@@ -360,65 +360,34 @@
           <!-- Список -->
           <div v-if="images.length > 0" class="images-list">
             <n-divider>Файлы ({{ images.length }})</n-divider>
+            <n-space align="center" :size="8" style="margin-bottom: 8px; flex-wrap: wrap">
+              <n-checkbox v-model:checked="showImagesList">
+                Показывать список файлов
+              </n-checkbox>
+              <n-checkbox v-model:checked="showThumbnails" :disabled="!showImagesList">
+                Показывать миниатюры
+              </n-checkbox>
+              <n-text depth="3" style="font-size: 12px">
+                На больших папках виртуальный список и WebView2-декодирование
+                картинок ощутимо нагружают главный поток — выключите, если лагает.
+              </n-text>
+            </n-space>
             <n-virtual-list
+              v-if="showImagesList"
               :items="images"
               :item-size="76"
+              key-field="path"
               style="max-height: 480px"
             >
               <template #default="{ item }">
-                <div class="image-item">
-                  <div class="image-item-thumb">
-                    <img
-                      v-if="canPreview(item)"
-                      :src="thumbnailUrl(item.path)"
-                      :alt="item.name"
-                      loading="lazy"
-                      @error="onThumbError(item.path)"
-                    />
-                    <n-icon v-else :component="FileImageIcon" size="32" />
-                  </div>
-                  <div class="image-item-info">
-                    <n-button
-                      text
-                      tag="a"
-                      type="primary"
-                      class="image-item-name"
-                      :title="`Открыть файл: ${item.path}`"
-                      @click="handleOpenFile(item)"
-                    >
-                      {{ item.name }}
-                    </n-button>
-                    <div class="image-item-sub">
-                      <template v-if="item.error">
-                        <n-text type="error" depth="3" style="font-size: 12px">
-                          {{ item.error }}
-                        </n-text>
-                      </template>
-                      <template v-else-if="item.targetFolder">
-                        <n-text depth="3" style="font-size: 12px">→ {{ item.targetFolder }}</n-text>
-                        <template v-if="item.movedTo">
-                          <n-text depth="3" style="font-size: 12px"> · </n-text>
-                          <n-button
-                            text
-                            tag="a"
-                            type="primary"
-                            class="image-item-path"
-                            :title="`Показать в проводнике: ${item.movedTo}`"
-                            @click="handleRevealMoved(item)"
-                          >
-                            {{ item.movedTo }}
-                          </n-button>
-                        </template>
-                      </template>
-                      <template v-else>
-                        <n-text depth="3" style="font-size: 12px">Ожидание...</n-text>
-                      </template>
-                    </div>
-                  </div>
-                  <n-tag size="small" :type="imageStatusType(item.status)">
-                    {{ imageStatusLabel(item.status) }}
-                  </n-tag>
-                </div>
+                <organizer-image-item
+                  :item="item"
+                  :show-thumbnail="showThumbnails"
+                  :status-label="imageStatusLabel(item.status)"
+                  :status-type="imageStatusType(item.status)"
+                  @open="handleOpenFile"
+                  @reveal="handleRevealMoved"
+                />
               </template>
             </n-virtual-list>
           </div>
@@ -525,7 +494,6 @@ import {
 import {
   FolderOpenOutline as FolderIcon,
   ImagesOutline as ImagesIcon,
-  ImageOutline as FileImageIcon,
   CheckmarkCircleOutline as MoveIcon,
   CloseCircleOutline as CloseIcon,
   PlaySkipForwardOutline as SkipIcon,
@@ -542,11 +510,10 @@ import {
   PauseCircleOutline as CancelledIcon,
 } from '@vicons/ionicons5';
 import { open } from '@tauri-apps/plugin-dialog';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { storeToRefs } from 'pinia';
 import { useOrganizerStore, type OrganizerImage, type OrganizerTask, type OrganizerTaskStatus } from '@/stores/organizer';
-
-const PREVIEWABLE_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp']);
+import OrganizerImageItem from './OrganizerImageItem.vue';
 
 const message = useMessage();
 const organizerStore = useOrganizerStore();
@@ -555,10 +522,10 @@ const {
   stats, progress, activeImage, currentIndex,
   activeTemplateName, templateNames,
   tasks, activeTaskId, activeTask, runningTaskId,
+  showThumbnails, showImagesList,
 } = storeToRefs(organizerStore);
 
 const newTemplateName = ref('');
-const brokenThumbs = ref(new Set<string>());
 
 const templateSelectOptions = computed(() => {
   return templateNames.value.map((name) => ({ label: name, value: name }));
@@ -843,7 +810,9 @@ async function handleRevealMoved(item: OrganizerImage): Promise<void> {
 
   console.log('[Organizer] Reveal in dir:', item.movedTo);
   try {
-    await invoke('plugin:opener|reveal_item_in_dir', { path: item.movedTo });
+    // С версии tauri-plugin-opener 2.5 команда принимает массив `paths`
+    // (старый ключ `path` ловит invalid args). См. plugins-workspace#3111.
+    await invoke('plugin:opener|reveal_item_in_dir', { paths: [item.movedTo] });
   } catch (e) {
     console.error('[Organizer] Failed to reveal in dir:', e);
     message.error(`Не удалось открыть папку: ${e instanceof Error ? e.message : String(e)}`);
@@ -923,28 +892,6 @@ function pluralizeTasks(n: number): string {
   return 'задач';
 }
 
-function canPreview(item: OrganizerImage): boolean {
-  if (brokenThumbs.value.has(item.path)) {
-    return false;
-  }
-
-  const dot = item.name.lastIndexOf('.');
-  if (dot < 0) {
-    return false;
-  }
-
-  const ext = item.name.slice(dot + 1).toLowerCase();
-  return PREVIEWABLE_EXTS.has(ext);
-}
-
-function thumbnailUrl(path: string): string {
-  return convertFileSrc(path);
-}
-
-function onThumbError(path: string): void {
-  console.warn('[Organizer] Thumbnail load failed:', path);
-  brokenThumbs.value.add(path);
-}
 </script>
 
 <style scoped lang="scss">
@@ -952,6 +899,16 @@ function onThumbError(path: string): void {
   height: 100%;
   padding: $spacing-lg;
   overflow-y: auto;
+
+  // Когда модель занята обработкой, GPU расходуется LMStudio.
+  // Чтобы не воровать у компоновщика последние крохи кадров,
+  // глушим все CSS-переходы и анимации внутри страницы.
+  // Это не отменяет реактивные обновления Vue — только их визуальное «приплытие».
+  &--running,
+  &--running :deep(*) {
+    transition: none !important;
+    animation: none !important;
+  }
 }
 
 .organizer-layout {
@@ -969,6 +926,9 @@ function onThumbError(path: string): void {
 
 .form-card {
   min-width: 0;
+  // Изолируем перерасчёт раскладки/отрисовки в пределах карточки —
+  // изменения в правой колонке не дёргают левую и наоборот.
+  contain: layout paint style;
 }
 
 .queue-card {
@@ -976,6 +936,7 @@ function onThumbError(path: string): void {
   top: $spacing-lg;
   max-height: calc(100vh - #{$spacing-lg} * 2 - 64px);
   overflow: hidden;
+  contain: layout paint style;
 
   :deep(.n-card__content) {
     overflow-y: auto;
@@ -985,89 +946,13 @@ function onThumbError(path: string): void {
 
 .current-photo {
   margin-top: $spacing-md;
+  contain: layout paint style;
 }
 
 .images-list {
   margin-top: $spacing-md;
-}
-
-.image-item {
-  display: flex;
-  align-items: center;
-  gap: $spacing-md;
-  padding: $spacing-sm $spacing-md;
-  border-bottom: 1px solid var(--n-border-color);
-  min-height: 76px;
-
-  &:last-child {
-    border-bottom: none;
-  }
-
-  &-thumb {
-    flex-shrink: 0;
-    width: 56px;
-    height: 56px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: $radius-sm;
-    background: var(--n-action-color, rgba(128, 128, 128, 0.08));
-    overflow: hidden;
-
-    > img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-  }
-
-  &-info {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    overflow: hidden;
-  }
-
-  &-name {
-    font-weight: 600;
-    text-align: left;
-    justify-content: flex-start;
-    max-width: 100%;
-
-    :deep(.n-button__content) {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      display: block;
-      max-width: 100%;
-    }
-  }
-
-  &-sub {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  &-path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-
-    :deep(.n-button__content) {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      display: block;
-      max-width: 100%;
-    }
-  }
+  // Виртуализированный список — отдельная зона перерасчёта.
+  contain: layout paint style;
 }
 
 .queue-list {
@@ -1086,6 +971,8 @@ function onThumbError(path: string): void {
   background: var(--n-action-color, rgba(128, 128, 128, 0.04));
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
+  // Каждая «карточка задачи» в очереди — отдельный остров для компоновщика.
+  contain: layout paint style;
 
   &:hover {
     background: var(--n-action-color, rgba(128, 128, 128, 0.10));
