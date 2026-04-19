@@ -36,6 +36,7 @@ fn main() {
             commands::list_lmstudio_models,
             organizer::organizer_list_images,
             organizer::organizer_classify_image,
+            organizer::organizer_generate_folders,
             organizer::organizer_move_file,
         ])
         .run(tauri::generate_context!())

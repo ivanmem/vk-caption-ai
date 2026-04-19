@@ -240,6 +240,113 @@ pub async fn organizer_classify_image(
     })
 }
 
+/// Просит модель LMStudio предложить набор целевых папок исходя из правил пользователя.
+/// Это «безмолвная» эмуляция MCP-инструмента: модель обязана вернуть JSON-массив строк,
+/// обёрнутый тегом `<folders>…</folders>`.
+#[tauri::command]
+pub async fn organizer_generate_folders(
+    state: State<'_, AppState>,
+    user_rules: String,
+    existing_folders: Vec<String>,
+    model_override: Option<String>,
+    temperature_override: Option<f32>,
+) -> Result<Vec<String>, String> {
+    let trimmed_rules = user_rules.trim();
+    if trimmed_rules.is_empty() {
+        return Err("Опишите правила классификации, чтобы модель смогла предложить папки.".into());
+    }
+
+    let (model, temperature) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        let m = model_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| s.lmstudio_model.clone());
+        let t = temperature_override.unwrap_or(s.temperature);
+        (m, t)
+    };
+
+    let system_prompt = build_folders_system_prompt(&existing_folders, trimmed_rules);
+    let user_text = "Сгенерируй список целевых папок согласно правилам. Верни строго формат <folders>[…]</folders>.".to_string();
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": temperature,
+    });
+
+    let client = state.client.clone();
+    println!(
+        "[organizer] generate folders (model={}, temperature={}, existing={:?})",
+        model, temperature, existing_folders
+    );
+
+    let resp = client
+        .post("http://localhost:1234/v1/chat/completions")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка соединения с LMStudio: {}", e))?;
+
+    let status = resp.status();
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Ошибка чтения тела ответа LMStudio: {}", e))?;
+
+    println!(
+        "[organizer] generate folders LMStudio status={} body={}",
+        status,
+        truncate_for_log(&body_text, 1500)
+    );
+
+    if !status.is_success() {
+        return Err(format!(
+            "LMStudio вернул HTTP {}: {}",
+            status,
+            truncate_for_log(&body_text, 500)
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Не JSON в ответе LMStudio ({}): {}", e, truncate_for_log(&body_text, 500)))?;
+
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let reasoning = json["choices"][0]["message"]["reasoning_content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    let raw = if content.trim().is_empty() && !reasoning.trim().is_empty() {
+        println!("[organizer] generate folders: content пустой, используем reasoning_content");
+        reasoning
+    } else {
+        content
+    };
+
+    if raw.trim().is_empty() {
+        return Err(format!(
+            "LMStudio вернула пустой ответ. Полный JSON: {}",
+            truncate_for_log(&body_text, 1500)
+        ));
+    }
+
+    let folders = parse_folders(&raw)
+        .ok_or_else(|| format!("Не удалось разобрать список папок из ответа модели: {}", truncate_for_log(&raw, 500)))?;
+
+    if folders.is_empty() {
+        return Err("Модель вернула пустой список папок.".into());
+    }
+
+    println!("[organizer] generated folders: {:?}", folders);
+    Ok(folders)
+}
+
 /// Перемещает файл в подпапку относительно базовой директории.
 /// Если файл с таким именем уже существует — добавляет суффикс `_1`, `_2`, …
 /// Возвращает итоговый абсолютный путь.
@@ -446,6 +553,109 @@ fn parse_folder(raw: &str, folders: &[String]) -> Option<String> {
     }
 
     None
+}
+
+fn build_folders_system_prompt(existing: &[String], user_rules: &str) -> String {
+    let existing_block = if existing.is_empty() {
+        "Существующих папок ещё нет — список можно собирать с нуля.".to_string()
+    } else {
+        let lines = existing
+            .iter()
+            .map(|f| format!("- {}", f))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("Уже существующие папки (можешь оставить, заменить или дополнить):\n{}", lines)
+    };
+
+    format!(
+        r#"Ты — помощник, который придумывает список целевых папок для сортировки фотографий.
+На основе правил пользователя предложи короткий, осмысленный набор папок.
+
+{existing_block}
+
+Правила пользователя:
+{user_rules}
+
+ФОРМАТ ОТВЕТА (обязателен, без отклонений):
+<folders>["Имя1", "Имя2", "Имя3"]</folders>
+
+Жёсткие требования:
+1. Внутри тега — только валидный JSON-массив строк, без комментариев и завершающих запятых.
+2. От 3 до 10 папок. Имена короткие (1–3 слова), на языке правил пользователя.
+3. Не используй запрещённые в именах файлов символы: <>:"/\|?*
+4. Не дублируй смысл: каждая папка должна закрывать отдельную категорию.
+5. Никаких объяснений, рассуждений, Markdown, кавычек вокруг тега, эмодзи — только тег <folders>…</folders>.
+"#
+    )
+}
+
+fn parse_folders(raw: &str) -> Option<Vec<String>> {
+    let payload = extract_folders_tag(raw).unwrap_or_else(|| raw.trim().to_string());
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Сначала пробуем как есть
+    if let Some(parsed) = try_parse_json_array(trimmed) {
+        return Some(parsed);
+    }
+
+    // Иначе ищем первый сбалансированный JSON-массив в строке
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut depth = 0i32;
+    let mut start: Option<usize> = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '[' {
+            if depth == 0 {
+                start = Some(i);
+            }
+            depth += 1;
+        } else if c == ']' {
+            depth -= 1;
+            if depth == 0 {
+                if let Some(s) = start {
+                    let slice: String = chars[s..=i].iter().collect();
+                    if let Some(parsed) = try_parse_json_array(&slice) {
+                        return Some(parsed);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn try_parse_json_array(slice: &str) -> Option<Vec<String>> {
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(slice).ok()?;
+    let mut out = Vec::with_capacity(parsed.len());
+    let mut seen = std::collections::HashSet::new();
+    for v in parsed {
+        let s = match v {
+            serde_json::Value::String(s) => s,
+            other => other.to_string(),
+        };
+        let cleaned = sanitize_folder_name(s.trim());
+        if cleaned.is_empty() {
+            continue;
+        }
+        if seen.insert(cleaned.to_lowercase()) {
+            out.push(cleaned);
+        }
+    }
+    Some(out)
+}
+
+fn extract_folders_tag(raw: &str) -> Option<String> {
+    let lower = raw.to_ascii_lowercase();
+    let open_tag = "<folders>";
+    let close_tag = "</folders>";
+    let open_abs = lower.find(open_tag)?;
+    let content_start = open_abs + open_tag.len();
+    let close_rel = lower[content_start..].find(close_tag)?;
+    let close_abs = content_start + close_rel;
+    Some(raw[content_start..close_abs].to_string())
 }
 
 fn extract_folder_tag(raw: &str) -> Option<String> {
