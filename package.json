@@ -1,6 +1,6 @@
 {
   "name": "vk-caption-ai",
-  "version": "0.2",
+  "version": "0.3",
   "description": "Tauri приложение для автогенерации описаний к фото VK через LMStudio",
   "type": "module",
   "scripts": {
