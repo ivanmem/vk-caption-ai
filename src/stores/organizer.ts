@@ -40,6 +40,8 @@ export interface OrganizerSettings {
   moveSkippedToUnsorted: boolean;
   /** Имя «мусорной» папки для нераспознанных файлов */
   unsortedFolderName: string;
+  /** Отключать ли thinking/reasoning в моделях, которые это поддерживают */
+  disableThinking: boolean;
 }
 
 export type OrganizerTaskStatus = 'idle' | 'processing' | 'done' | 'cancelled' | 'error';
@@ -58,7 +60,19 @@ export interface OrganizerTask {
   label: string;
   /** Имя шаблона, из которого задача была создана (только метка, не ссылка) */
   templateName: string | null;
-  /** Полный snapshot настроек на момент создания/последней правки задачи */
+  /** Брать ли параметры задачи из шаблона на момент запуска (кроме sourceFolder) */
+  useTemplate: boolean;
+  /**
+   * Базовый шаблон, относительно которого считаются локальные переопределения
+   * задачи в режиме `useTemplate=true`.
+   */
+  templateBaseline: OrganizerSettings | null;
+  /**
+   * Конфиг задачи:
+   * - в snapshot-режиме (`useTemplate=false`) хранит все поля задачи;
+   * - в linked-режиме (`useTemplate=true`) хранит `sourceFolder` + локальные
+   *   значения, которые могут переопределять шаблон.
+   */
   config: OrganizerSettings;
   /** Найденные в папке-источнике изображения и их состояние */
   images: OrganizerImage[];
@@ -90,6 +104,17 @@ interface ImageFileDto {
 
 const DEFAULT_TEMPLATE_NAME = 'default';
 const STORAGE_KEY = 'vk-caption-ai-organizer';
+const SETTINGS_OVERRIDE_KEYS = [
+  'destinationFolder',
+  'userPrompt',
+  'folders',
+  'modelOverride',
+  'temperatureOverride',
+  'moveSkippedToUnsorted',
+  'unsortedFolderName',
+  'disableThinking',
+] as const;
+type OrganizerSettingsOverrideKey = (typeof SETTINGS_OVERRIDE_KEYS)[number];
 
 /**
  * Задержка перед фактической записью в `localStorage`. Любая правка формы
@@ -257,18 +282,7 @@ export const useOrganizerStore = defineStore('organizer', () => {
     return runningTaskId.value !== null && runningTaskId.value === activeTaskId.value;
   });
 
-  /**
-   * Главное «окно» в данные формы: либо в snapshot активной задачи,
-   * либо в активный шаблон, если задача не открыта.
-   * Все правки полей формы проходят через этот объект, поэтому
-   * автоматически попадают либо в задачу, либо в шаблон.
-   */
-  const settings = computed<OrganizerSettings>(() => {
-    const task = activeTask.value;
-    if (task) {
-      return task.config;
-    }
-
+  const templateSettings = computed<OrganizerSettings>(() => {
     const name = activeTemplateName.value;
     if (!templates.value[name]) {
       console.warn('[Organizer] Active template missing, recreating:', name);
@@ -276,6 +290,28 @@ export const useOrganizerStore = defineStore('organizer', () => {
     }
 
     return templates.value[name];
+  });
+
+  /**
+   * Главное «окно» в данные формы: либо в конфиг активной задачи,
+   * либо в активный шаблон, если задача не открыта.
+   */
+  const settings = computed<OrganizerSettings>(() => {
+    const task = activeTask.value;
+    if (task) {
+      return task.config;
+    }
+
+    return templateSettings.value;
+  });
+
+  const effectiveSettings = computed<OrganizerSettings>(() => {
+    const task = activeTask.value;
+    if (!task) {
+      return templateSettings.value;
+    }
+
+    return resolveTaskConfig(task);
   });
 
   /** Список изображений активной задачи (или пустой массив). */
@@ -312,8 +348,10 @@ export const useOrganizerStore = defineStore('organizer', () => {
   });
 
   const baseDestination = computed(() => {
-    return settings.value.destinationFolder.trim() || settings.value.sourceFolder;
+    return effectiveSettings.value.destinationFolder.trim() || effectiveSettings.value.sourceFolder;
   });
+
+  let templatesSyncSnapshot = snapshotTemplates(templates.value);
 
   // ── Управление шаблонами ──
 
@@ -345,6 +383,13 @@ export const useOrganizerStore = defineStore('organizer', () => {
 
     delete templates.value[name];
 
+    for (const task of tasks.value) {
+      if (task.templateName === name && task.useTemplate) {
+        task.useTemplate = false;
+        task.templateBaseline = null;
+      }
+    }
+
     if (activeTemplateName.value === name) {
       activeTemplateName.value = DEFAULT_TEMPLATE_NAME;
     }
@@ -373,6 +418,12 @@ export const useOrganizerStore = defineStore('organizer', () => {
     templates.value[cleaned] = templates.value[oldName];
     delete templates.value[oldName];
 
+    for (const task of tasks.value) {
+      if (task.templateName === oldName) {
+        task.templateName = cleaned;
+      }
+    }
+
     if (activeTemplateName.value === oldName) {
       activeTemplateName.value = cleaned;
     }
@@ -394,15 +445,26 @@ export const useOrganizerStore = defineStore('organizer', () => {
    * Создаёт новую задачу из текущего открытого в форме конфига.
    * Если открыта задача — берётся её config (как «дубликат»),
    * иначе — копия активного шаблона.
+   * В режиме `useTemplate=true` задача хранит локальный конфиг, но фактические
+   * значения считаются от шаблона + локальных переопределений.
    */
-  function createTaskFromCurrent(options: { activate?: boolean } = {}): string {
+  function createTaskFromCurrent(options: { activate?: boolean; useTemplate?: boolean } = {}): string {
     const id = createId();
-    const sourceConfig = cloneSettings(settings.value);
+    const useTemplate = options.useTemplate ?? activeTask.value?.useTemplate ?? true;
     const templateName = activeTask.value?.templateName ?? activeTemplateName.value;
+    const sourceConfig = cloneSettings(settings.value);
+    const template = templates.value[templateName] ?? templateSettings.value;
+    const sourceBaseline = activeTask.value?.useTemplate && activeTask.value.templateBaseline
+      ? activeTask.value.templateBaseline
+      : template;
     const task: OrganizerTask = {
       id,
       label: deriveTaskLabel(sourceConfig, tasks.value.length),
       templateName,
+      useTemplate,
+      templateBaseline: useTemplate
+        ? cloneSettings(sourceBaseline)
+        : null,
       config: sourceConfig,
       images: [],
       stats: { total: 0, moved: 0, skipped: 0, failed: 0 },
@@ -419,7 +481,7 @@ export const useOrganizerStore = defineStore('organizer', () => {
       activeTaskId.value = id;
     }
 
-    console.log('[Organizer] Task created:', id, 'label=', task.label, 'fromTemplate=', templateName);
+    console.log('[Organizer] Task created:', id, 'label=', task.label, 'useTemplate=', useTemplate, 'fromTemplate=', templateName);
     return id;
   }
 
@@ -454,6 +516,107 @@ export const useOrganizerStore = defineStore('organizer', () => {
     }
   }
 
+  function syncTaskLabelWithSource(id: string): void {
+    const index = tasks.value.findIndex((t) => t.id === id);
+    if (index < 0) {
+      return;
+    }
+
+    const task = tasks.value[index];
+    task.label = deriveTaskLabel(task.config, index);
+  }
+
+  function refreshActiveTaskFromTemplate(): void {
+    const task = activeTask.value;
+    if (!task) {
+      throw new Error('Откройте задачу, которую нужно обновить.');
+    }
+
+    if (isRunningActive.value) {
+      throw new Error('Нельзя обновить задачу во время выполнения.');
+    }
+
+    const templateName = activeTemplateName.value;
+    const template = templates.value[templateName];
+    if (!template) {
+      throw new Error(`Шаблон «${templateName}» не найден.`);
+    }
+
+    const sourceFolder = task.config.sourceFolder;
+    task.config = cloneSettings(template);
+    task.config.sourceFolder = sourceFolder;
+    task.templateName = templateName;
+    if (task.useTemplate) {
+      task.templateBaseline = cloneSettings(task.config);
+    }
+
+    console.log('[Organizer] Active task refreshed from template:', task.id, 'template=', templateName);
+  }
+
+  function setActiveTaskUseTemplate(useTemplate: boolean): void {
+    const task = activeTask.value;
+    if (!task) {
+      return;
+    }
+
+    if (isRunningActive.value) {
+      throw new Error('Нельзя менять режим шаблона во время выполнения.');
+    }
+
+    if (task.useTemplate === useTemplate) {
+      return;
+    }
+
+    if (useTemplate) {
+      const template = templates.value[activeTemplateName.value] ?? templateSettings.value;
+      const sourceFolder = task.config.sourceFolder;
+      task.config = cloneSettings(template);
+      task.config.sourceFolder = sourceFolder;
+      task.templateName = activeTemplateName.value;
+      task.templateBaseline = cloneSettings(template);
+      task.useTemplate = true;
+      console.log('[Organizer] Active task switched to template-linked mode:', task.id);
+      return;
+    }
+
+    const resolved = resolveTaskConfig(task);
+    task.config = cloneSettings(resolved);
+    task.useTemplate = false;
+    task.templateBaseline = null;
+    console.log('[Organizer] Active task switched to snapshot mode:', task.id);
+  }
+
+  function setActiveTaskTemplate(name: string): void {
+    const task = activeTask.value;
+    if (!task || !task.useTemplate) {
+      return;
+    }
+
+    const template = templates.value[name];
+    if (!template) {
+      return;
+    }
+
+    const baseline = task.templateBaseline
+      ? cloneSettings(task.templateBaseline)
+      : cloneSettings(template);
+    const sourceFolder = task.config.sourceFolder;
+    for (const key of SETTINGS_OVERRIDE_KEYS) {
+      const currentValue = task.config[key];
+      const baselineValue = baseline[key];
+      const isOverridden = !isSettingsValueEqual(currentValue, baselineValue);
+      if (!isOverridden) {
+        applySettingsOverride(task.config, key, template[key]);
+      }
+
+      applySettingsOverride(baseline, key, template[key]);
+    }
+
+    task.config.sourceFolder = sourceFolder;
+    task.templateBaseline = baseline;
+    task.templateName = name;
+  }
+
   function resetTask(id: string): void {
     const task = tasks.value.find((t) => t.id === id);
     if (!task) {
@@ -474,6 +637,69 @@ export const useOrganizerStore = defineStore('organizer', () => {
     console.log('[Organizer] Task reset:', id);
   }
 
+  function resolveTaskConfig(task: OrganizerTask): OrganizerSettings {
+    if (!task.useTemplate) {
+      return cloneSettings(task.config);
+    }
+
+    const sourceFolder = task.config.sourceFolder;
+    const templateName = task.templateName;
+    const template = templateName ? templates.value[templateName] : null;
+    if (!template) {
+      console.warn('[Organizer] Template-linked task has no template, fallback to stored config:', task.id, templateName);
+      return cloneSettings(task.config);
+    }
+
+    const resolved = cloneSettings(template);
+    resolved.sourceFolder = sourceFolder;
+
+    const baseline = task.templateBaseline
+      ? cloneSettings(task.templateBaseline)
+      : cloneSettings(template);
+    for (const key of SETTINGS_OVERRIDE_KEYS) {
+      const current = task.config[key];
+      const baselineValue = baseline[key];
+      if (!isSettingsValueEqual(current, baselineValue)) {
+        applySettingsOverride(resolved, key, current);
+      }
+    }
+
+    return resolved;
+  }
+
+  function syncLinkedTasksWithTemplates(nextTemplates: Record<string, OrganizerSettings>): void {
+    for (const task of tasks.value) {
+      if (!task.useTemplate || !task.templateName) {
+        continue;
+      }
+
+      const nextTemplate = nextTemplates[task.templateName];
+      if (!nextTemplate) {
+        continue;
+      }
+
+      const previousTemplate = templatesSyncSnapshot[task.templateName] ?? nextTemplate;
+      const baseline = task.templateBaseline
+        ? cloneSettings(task.templateBaseline)
+        : cloneSettings(previousTemplate);
+      const sourceFolder = task.config.sourceFolder;
+
+      for (const key of SETTINGS_OVERRIDE_KEYS) {
+        const currentValue = task.config[key];
+        const baselineValue = baseline[key];
+        const isOverridden = !isSettingsValueEqual(currentValue, baselineValue);
+        if (!isOverridden) {
+          applySettingsOverride(task.config, key, nextTemplate[key]);
+        }
+
+        applySettingsOverride(baseline, key, nextTemplate[key]);
+      }
+
+      task.config.sourceFolder = sourceFolder;
+      task.templateBaseline = baseline;
+    }
+  }
+
   // ── Запуск/остановка задач ──
 
   async function runTaskById(id: string): Promise<void> {
@@ -486,13 +712,15 @@ export const useOrganizerStore = defineStore('organizer', () => {
       throw new Error('Задача не найдена.');
     }
 
-    if (!task.config.sourceFolder) {
+    const config = resolveTaskConfig(task);
+
+    if (!config.sourceFolder) {
       task.status = 'error';
       task.errorMessage = 'Не выбрана папка-источник.';
       throw new Error(task.errorMessage);
     }
 
-    const cleanFolders = task.config.folders.map((f) => f.trim()).filter(Boolean);
+    const cleanFolders = config.folders.map((f) => f.trim()).filter(Boolean);
     if (cleanFolders.length === 0) {
       task.status = 'error';
       task.errorMessage = 'Не задан ни один вариант папки назначения.';
@@ -505,12 +733,12 @@ export const useOrganizerStore = defineStore('organizer', () => {
     task.status = 'processing';
     task.startedAt = Date.now();
     task.errorMessage = null;
-    console.log('[Organizer] Run task:', id, 'sourceFolder=', task.config.sourceFolder);
+    console.log('[Organizer] Run task:', id, 'sourceFolder=', config.sourceFolder, 'useTemplate=', task.useTemplate, 'template=', task.templateName);
 
     try {
       const list = await raceAbort(
         invoke<ImageFileDto[]>('organizer_list_images', {
-          folder: task.config.sourceFolder,
+          folder: config.sourceFolder,
         }),
         controller.signal,
       );
@@ -525,7 +753,7 @@ export const useOrganizerStore = defineStore('organizer', () => {
       task.stats = { total: task.images.length, moved: 0, skipped: 0, failed: 0 };
       task.currentIndex = 0;
 
-      const baseDest = task.config.destinationFolder.trim() || task.config.sourceFolder;
+      const baseDest = config.destinationFolder.trim() || config.sourceFolder;
 
       for (let i = 0; i < task.images.length; i++) {
         if (controller.signal.aborted) {
@@ -558,10 +786,11 @@ export const useOrganizerStore = defineStore('organizer', () => {
           const result = await raceAbort(
             invoke<ClassifyResultDto>('organizer_classify_image', {
               filePath: image.path,
-              userRules: task.config.userPrompt,
+              userRules: config.userPrompt,
               folders: cleanFolders,
-              modelOverride: task.config.modelOverride.trim() || null,
-              temperatureOverride: task.config.temperatureOverride,
+              modelOverride: config.modelOverride.trim() || null,
+              temperatureOverride: config.temperatureOverride,
+              disableThinking: config.disableThinking,
             }),
             controller.signal,
           );
@@ -587,8 +816,8 @@ export const useOrganizerStore = defineStore('organizer', () => {
           }
 
           if (!result.matched || !result.folder) {
-            if (task.config.moveSkippedToUnsorted) {
-              const target = task.config.unsortedFolderName || '_unsorted';
+            if (config.moveSkippedToUnsorted) {
+              const target = config.unsortedFolderName || '_unsorted';
               const moved = await raceAbort(
                 invoke<string>('organizer_move_file', {
                   filePath: image.path,
@@ -657,6 +886,15 @@ export const useOrganizerStore = defineStore('organizer', () => {
           task.stats.failed++;
           stepBranch = 'error';
           console.error(`[Organizer] [${task.label}] Error processing ${image.name}:`, err);
+          if (isFatalImageModelError(image.error)) {
+            task.status = 'error';
+            task.errorMessage = image.error;
+            console.error(
+              `[Organizer] [${task.label}] Fatal model configuration error; stopping task early.`,
+              image.error,
+            );
+            break;
+          }
         }
 
         // Сводный замер: одна строка на каждый файл, какой бы веткой он ни ушёл.
@@ -679,7 +917,9 @@ export const useOrganizerStore = defineStore('organizer', () => {
         }
       }
 
-      if (task.status !== 'cancelled') {
+      if (task.status === 'error') {
+        // Фатальная ошибка уже зафиксирована внутри цикла.
+      } else if (task.status !== 'cancelled') {
         task.status = task.stats.failed > 0 && task.stats.moved + task.stats.skipped === 0
           ? 'error'
           : 'done';
@@ -732,11 +972,11 @@ export const useOrganizerStore = defineStore('organizer', () => {
    * стартует с нуля. Если уже завершена/прервана — переиспользует тот же id,
    * но сначала сбрасывает счётчики (через `resetTask`).
    */
-  async function startActiveTask(): Promise<void> {
+  async function startActiveTask(options: { useTemplate?: boolean } = {}): Promise<void> {
     let id = activeTaskId.value;
     if (!id) {
       // Если открыт шаблон — на лету создаём задачу из него.
-      id = createTaskFromCurrent({ activate: true });
+      id = createTaskFromCurrent({ activate: true, useTemplate: options.useTemplate });
     } else {
       const task = tasks.value.find((t) => t.id === id);
       if (task && task.status !== 'idle' && task.status !== 'processing') {
@@ -749,12 +989,12 @@ export const useOrganizerStore = defineStore('organizer', () => {
 
   // ── Генерация целевых папок ──
 
-  async function generateFolders(mode: 'replace' | 'merge'): Promise<string[]> {
+  async function generateFoldersForSettings(target: OrganizerSettings, mode: 'replace' | 'merge'): Promise<string[]> {
     if (isGeneratingFolders.value) {
       return [];
     }
 
-    if (!settings.value.userPrompt.trim()) {
+    if (!target.userPrompt.trim()) {
       throw new Error('Заполните правила классификации, чтобы модель могла предложить папки.');
     }
 
@@ -762,20 +1002,21 @@ export const useOrganizerStore = defineStore('organizer', () => {
     try {
       console.log('[Organizer] Generating folders, mode=', mode);
       const generated = await invoke<string[]>('organizer_generate_folders', {
-        userRules: settings.value.userPrompt,
-        existingFolders: settings.value.folders,
-        modelOverride: settings.value.modelOverride.trim() || null,
-        temperatureOverride: settings.value.temperatureOverride,
+        userRules: target.userPrompt,
+        existingFolders: target.folders,
+        modelOverride: target.modelOverride.trim() || null,
+        temperatureOverride: target.temperatureOverride,
+        disableThinking: target.disableThinking,
       });
 
       console.log('[Organizer] Generated folders:', generated);
 
       if (mode === 'replace') {
-        settings.value.folders = [...generated];
+        target.folders = [...generated];
       } else {
-        const existingLower = new Set(settings.value.folders.map((f) => f.trim().toLowerCase()));
+        const existingLower = new Set(target.folders.map((f) => f.trim().toLowerCase()));
         const additions = generated.filter((f) => !existingLower.has(f.trim().toLowerCase()));
-        settings.value.folders = [...settings.value.folders, ...additions];
+        target.folders = [...target.folders, ...additions];
       }
 
       return generated;
@@ -783,6 +1024,19 @@ export const useOrganizerStore = defineStore('organizer', () => {
       isGeneratingFolders.value = false;
     }
   }
+
+  async function generateFolders(mode: 'replace' | 'merge'): Promise<string[]> {
+    return generateFoldersForSettings(settings.value, mode);
+  }
+
+  watch(
+    templates,
+    (nextTemplates) => {
+      syncLinkedTasksWithTemplates(nextTemplates);
+      templatesSyncSnapshot = snapshotTemplates(nextTemplates);
+    },
+    { deep: true },
+  );
 
   // ── Дебаунс-сохранение в localStorage ──
   // Глубокий watcher срабатывает один раз за тик Vue даже при пачке
@@ -834,10 +1088,12 @@ export const useOrganizerStore = defineStore('organizer', () => {
         id: t.id,
         label: t.label,
         templateName: t.templateName,
+        useTemplate: t.useTemplate,
         status: t.status,
         currentIndex: t.currentIndex,
         stats: t.stats,
         config: t.config,
+        templateBaseline: t.templateBaseline,
         createdAt: t.createdAt,
         startedAt: t.startedAt,
         finishedAt: t.finishedAt,
@@ -869,6 +1125,8 @@ export const useOrganizerStore = defineStore('organizer', () => {
 
     // данные формы (через активную задачу или активный шаблон)
     settings,
+    templateSettings,
+    effectiveSettings,
     baseDestination,
 
     // очередь
@@ -883,6 +1141,10 @@ export const useOrganizerStore = defineStore('organizer', () => {
     createTaskFromCurrent,
     deleteTask,
     renameTask,
+    syncTaskLabelWithSource,
+    refreshActiveTaskFromTemplate,
+    setActiveTaskUseTemplate,
+    setActiveTaskTemplate,
     resetTask,
     runTaskById,
     startActiveTask,
@@ -902,6 +1164,7 @@ export const useOrganizerStore = defineStore('organizer', () => {
     // вспомогательное
     isGeneratingFolders,
     generateFolders,
+    generateFoldersForSettings,
   };
 });
 
@@ -920,7 +1183,28 @@ function sanitizePersistedState(state: PersistedStateShape): PersistedStateShape
   let touchedTasks = 0;
   let touchedImages = 0;
 
+  for (const template of Object.values(state.templates)) {
+    template.disableThinking = Boolean(template.disableThinking);
+  }
+
   for (const task of state.tasks) {
+    task.useTemplate = Boolean(task.useTemplate);
+    task.config.disableThinking = Boolean(task.config.disableThinking);
+    if (task.useTemplate) {
+      if (!task.templateName || !state.templates[task.templateName]) {
+        task.templateName = state.activeTemplateName;
+      }
+
+      const hasPersistedBaseline = task.templateBaseline !== null && task.templateBaseline !== undefined;
+      task.templateBaseline = hasPersistedBaseline
+        ? cloneSettings(task.templateBaseline as OrganizerSettings)
+        : cloneSettings(task.config);
+
+      task.templateBaseline.disableThinking = Boolean(task.templateBaseline.disableThinking);
+    } else {
+      task.templateBaseline = null;
+    }
+
     if (task.status === 'processing') {
       task.status = 'cancelled';
       task.errorMessage ??= 'Обработка прервана перезапуском приложения.';
@@ -977,7 +1261,56 @@ function cloneSettings(src: OrganizerSettings): OrganizerSettings {
     temperatureOverride: raw.temperatureOverride,
     moveSkippedToUnsorted: raw.moveSkippedToUnsorted,
     unsortedFolderName: raw.unsortedFolderName,
+    disableThinking: Boolean(raw.disableThinking),
   };
+}
+
+function snapshotTemplates(src: Record<string, OrganizerSettings>): Record<string, OrganizerSettings> {
+  const out: Record<string, OrganizerSettings> = {};
+  for (const [name, cfg] of Object.entries(src)) {
+    out[name] = cloneSettings(cfg);
+  }
+
+  return out;
+}
+
+function cloneSettingsValue<K extends OrganizerSettingsOverrideKey>(
+  value: OrganizerSettings[K],
+): OrganizerSettings[K] {
+  if (Array.isArray(value)) {
+    return [...value] as OrganizerSettings[K];
+  }
+
+  return value;
+}
+
+function applySettingsOverride<K extends OrganizerSettingsOverrideKey>(
+  target: OrganizerSettings,
+  key: K,
+  value: OrganizerSettings[K],
+): void {
+  target[key] = cloneSettingsValue(value);
+}
+
+function isSettingsValueEqual<K extends OrganizerSettingsOverrideKey>(
+  left: OrganizerSettings[K],
+  right: OrganizerSettings[K],
+): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) {
+      return false;
+    }
+
+    for (let i = 0; i < left.length; i++) {
+      if (left[i] !== right[i]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  return left === right;
 }
 
 /**
@@ -997,6 +1330,12 @@ function makeAbortError(): Error {
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError';
+}
+
+function isFatalImageModelError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('model does not support images')
+    || normalized.includes('не поддерживает изображения');
 }
 
 /**
@@ -1040,6 +1379,7 @@ function createDefaultSettings(): OrganizerSettings {
     temperatureOverride: null,
     moveSkippedToUnsorted: false,
     unsortedFolderName: '_unsorted',
+    disableThinking: false,
   };
 }
 

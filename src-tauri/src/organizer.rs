@@ -108,6 +108,7 @@ pub async fn organizer_classify_image(
     folders: Vec<String>,
     model_override: Option<String>,
     temperature_override: Option<f32>,
+    disable_thinking: Option<bool>,
 ) -> Result<ClassifyResult, String> {
     if folders.is_empty() {
         return Err("Список папок пуст. Укажите хотя бы одну папку назначения.".into());
@@ -159,7 +160,7 @@ pub async fn organizer_classify_image(
         "Проанализируй изображение и выбери одну папку. Верни строго формат <folder>...</folder>."
             .to_string();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -170,11 +171,17 @@ pub async fn organizer_classify_image(
         ],
         "temperature": temperature,
     });
+    let disable_thinking = disable_thinking.unwrap_or(false);
+    if disable_thinking {
+        body["chat_template_kwargs"] = serde_json::json!({
+            "enable_thinking": false
+        });
+    }
 
     let client = state.client.clone();
     println!(
-        "[organizer] classify {} (model={}, temperature={}, folders={:?})",
-        file_path, model, temperature, folders
+        "[organizer] classify {} (model={}, temperature={}, disable_thinking={}, folders={:?})",
+        file_path, model, temperature, disable_thinking, folders
     );
 
     let resp = client
@@ -256,6 +263,7 @@ pub async fn organizer_generate_folders(
     existing_folders: Vec<String>,
     model_override: Option<String>,
     temperature_override: Option<f32>,
+    disable_thinking: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let trimmed_rules = user_rules.trim();
     if trimmed_rules.is_empty() {
@@ -274,7 +282,7 @@ pub async fn organizer_generate_folders(
     let system_prompt = build_folders_system_prompt(&existing_folders, trimmed_rules);
     let user_text = "Сгенерируй список целевых папок согласно правилам. Верни строго формат <folders>[…]</folders>.".to_string();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -282,11 +290,17 @@ pub async fn organizer_generate_folders(
         ],
         "temperature": temperature,
     });
+    let disable_thinking = disable_thinking.unwrap_or(false);
+    if disable_thinking {
+        body["chat_template_kwargs"] = serde_json::json!({
+            "enable_thinking": false
+        });
+    }
 
     let client = state.client.clone();
     println!(
-        "[organizer] generate folders (model={}, temperature={}, existing={:?})",
-        model, temperature, existing_folders
+        "[organizer] generate folders (model={}, temperature={}, disable_thinking={}, existing={:?})",
+        model, temperature, disable_thinking, existing_folders
     );
 
     let resp = client
