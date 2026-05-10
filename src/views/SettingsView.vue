@@ -75,6 +75,7 @@
               :loading="loadingModels"
               placeholder="google/gemma-3-12b"
               clearable
+              :get-show="() => true"
               @focus="handleModelsFetch"
             />
             <template #feedback>
@@ -164,7 +165,7 @@
               Модель должна поддерживать vision (распознавание изображений)
             </li>
             <li>
-              Рекомендуемая модель: <strong>zai-org/glm-4.6v-flash</strong>
+              Рекомендуемая модель: <strong>google/gemma-4-31b</strong>
             </li>
             <li>LMStudio должен быть запущен на порту 1234</li>
           </ul>
@@ -175,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, h } from "vue";
+import { ref, onMounted, h } from "vue";
 import type { FormInst, FormRules } from "naive-ui";
 import {
   NCard,
@@ -199,13 +200,13 @@ import {
 } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore, DEFAULT_SYSTEM_PROMPT } from "@/stores/app";
+import { useLmstudioModels } from "@/composables/useLmstudioModels";
 
 const message = useMessage();
 const appStore = useAppStore();
+const { loadingModels, modelOptions, handleModelsFetch } = useLmstudioModels();
 const formRef = ref<FormInst | null>(null);
 const saving = ref(false);
-const loadingModels = ref(false);
-const availableModels = ref<string[]>([]);
 const loadingAlbums = ref(false);
 const albumOptions = ref<
   Array<{ label: string; value: string; thumb?: string; size?: number }>
@@ -221,14 +222,7 @@ const rules: FormRules = {
   vkAlbumId: { required: true, message: "Введите ID альбома", trigger: "blur" },
 };
 
-const modelOptions = computed(() => {
-  return availableModels.value.map((m) => {
-    return {
-      label: m,
-      value: m,
-    };
-  });
-});
+
 
 interface VkAlbum {
   id: number;
@@ -319,21 +313,7 @@ function handleReset(): void {
   systemPromptDraft.value = DEFAULT_SYSTEM_PROMPT;
 }
 
-async function handleModelsFetch(): Promise<void> {
-  if (loadingModels.value) {
-    return;
-  }
 
-  loadingModels.value = true;
-  try {
-    const models = await invoke<string[]>("list_lmstudio_models");
-    availableModels.value = models;
-  } catch (e) {
-    console.warn("Failed to fetch models from LMStudio:", e);
-  } finally {
-    loadingModels.value = false;
-  }
-}
 
 function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
   return new Promise((resolve, reject) => {

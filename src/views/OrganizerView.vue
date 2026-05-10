@@ -239,10 +239,15 @@
                   <n-collapse-item title="Параметры модели" name="model">
                     <n-space vertical>
                       <n-form-item label="Модель LMStudio (переопределить)" :show-feedback="false">
-                        <n-input
+                        <n-auto-complete
                             v-model:value="settings.modelOverride"
+                            :options="modelOptions"
+                            :loading="loadingModels"
                             placeholder="Пусто — используется модель из общих настроек"
                             :disabled="formDisabled"
+                            clearable
+                            :get-show="() => true"
+                            @focus="handleModelsFetch"
                         />
                       </n-form-item>
 
@@ -390,10 +395,15 @@
                   <n-collapse-item title="Параметры модели (шаблон)" name="template-model">
                     <n-space vertical>
                       <n-form-item label="Модель LMStudio (переопределить)" :show-feedback="false">
-                        <n-input
+                        <n-auto-complete
                             v-model:value="templateSettings.modelOverride"
+                            :options="modelOptions"
+                            :loading="loadingModels"
                             placeholder="Пусто — используется модель из общих настроек"
                             :disabled="formDisabled"
+                            clearable
+                            :get-show="() => true"
+                            @focus="handleModelsFetch"
                         />
                       </n-form-item>
 
@@ -720,6 +730,7 @@ import {
   NCheckbox,
   NCollapse,
   NCollapseItem,
+  NAutoComplete,
   NDivider,
   NDynamicTags,
   NEmpty,
@@ -771,9 +782,11 @@ import {
   useOrganizerStore
 } from '@/stores/organizer';
 import OrganizerImageItem from './OrganizerImageItem.vue';
+import { useLmstudioModels } from '@/composables/useLmstudioModels';
 
 const message = useMessage();
 const organizerStore = useOrganizerStore();
+const { loadingModels, modelOptions, handleModelsFetch } = useLmstudioModels();
 const {
   settings, templateSettings, effectiveSettings, images, isProcessing, isRunningActive, isGeneratingFolders,
   stats, progress, activeImage, currentIndex,
