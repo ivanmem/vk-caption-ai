@@ -34,11 +34,14 @@ export interface AppSettings {
   vkAlbumId: string;
   vkOwnerId: string;
   lmstudioModel: string;
+  lmstudioToken?: string;
   processingMode: 'auto' | 'manual';
   systemPrompt: string;
   processPhotosWithCaption?: boolean;
   revOrder?: boolean;
   temperature?: number;
+  imageTransmissionMode?: 'direct' | 'path' | 'mixed';
+  lmstudioIntegrations?: string;
 }
 
 export interface ManualReviewPayload {
@@ -53,11 +56,14 @@ export const useAppStore = defineStore('app', () => {
     vkAlbumId: '',
     vkOwnerId: '',
     lmstudioModel: 'zai-org/glm-4.6v-flash',
+    lmstudioToken: '',
     processingMode: 'auto',
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
     processPhotosWithCaption: false,
     revOrder: true,
     temperature: 1.1,
+    imageTransmissionMode: 'direct',
+    lmstudioIntegrations: '',
   });
 
   const photos = ref<PhotoTask[]>([]);

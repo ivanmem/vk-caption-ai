@@ -40,8 +40,6 @@ export interface OrganizerSettings {
   moveSkippedToUnsorted: boolean;
   /** Имя «мусорной» папки для нераспознанных файлов */
   unsortedFolderName: string;
-  /** Отключать ли thinking/reasoning в моделях, которые это поддерживают */
-  disableThinking: boolean;
 }
 
 export type OrganizerTaskStatus = 'idle' | 'processing' | 'done' | 'cancelled' | 'error';
@@ -112,7 +110,6 @@ const SETTINGS_OVERRIDE_KEYS = [
   'temperatureOverride',
   'moveSkippedToUnsorted',
   'unsortedFolderName',
-  'disableThinking',
 ] as const;
 type OrganizerSettingsOverrideKey = (typeof SETTINGS_OVERRIDE_KEYS)[number];
 
@@ -790,7 +787,6 @@ export const useOrganizerStore = defineStore('organizer', () => {
               folders: cleanFolders,
               modelOverride: config.modelOverride.trim() || null,
               temperatureOverride: config.temperatureOverride,
-              disableThinking: config.disableThinking,
             }),
             controller.signal,
           );
@@ -1006,7 +1002,6 @@ export const useOrganizerStore = defineStore('organizer', () => {
         existingFolders: target.folders,
         modelOverride: target.modelOverride.trim() || null,
         temperatureOverride: target.temperatureOverride,
-        disableThinking: target.disableThinking,
       });
 
       console.log('[Organizer] Generated folders:', generated);
@@ -1183,13 +1178,10 @@ function sanitizePersistedState(state: PersistedStateShape): PersistedStateShape
   let touchedTasks = 0;
   let touchedImages = 0;
 
-  for (const template of Object.values(state.templates)) {
-    template.disableThinking = Boolean(template.disableThinking);
-  }
+
 
   for (const task of state.tasks) {
     task.useTemplate = Boolean(task.useTemplate);
-    task.config.disableThinking = Boolean(task.config.disableThinking);
     if (task.useTemplate) {
       if (!task.templateName || !state.templates[task.templateName]) {
         task.templateName = state.activeTemplateName;
@@ -1200,7 +1192,7 @@ function sanitizePersistedState(state: PersistedStateShape): PersistedStateShape
         ? cloneSettings(task.templateBaseline as OrganizerSettings)
         : cloneSettings(task.config);
 
-      task.templateBaseline.disableThinking = Boolean(task.templateBaseline.disableThinking);
+
     } else {
       task.templateBaseline = null;
     }
@@ -1261,7 +1253,6 @@ function cloneSettings(src: OrganizerSettings): OrganizerSettings {
     temperatureOverride: raw.temperatureOverride,
     moveSkippedToUnsorted: raw.moveSkippedToUnsorted,
     unsortedFolderName: raw.unsortedFolderName,
-    disableThinking: Boolean(raw.disableThinking),
   };
 }
 
@@ -1379,7 +1370,6 @@ function createDefaultSettings(): OrganizerSettings {
     temperatureOverride: null,
     moveSkippedToUnsorted: false,
     unsortedFolderName: '_unsorted',
-    disableThinking: false,
   };
 }
 

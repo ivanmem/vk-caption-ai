@@ -83,6 +83,50 @@
             </template>
           </n-form-item>
 
+          <n-form-item label="LM Studio Token (опционально)" path="lmstudioToken">
+            <n-input
+              v-model:value="appStore.settings.lmstudioToken"
+              type="password"
+              placeholder="sk-..."
+              show-password-on="click"
+              clearable
+            />
+            <template #feedback>
+              Необходим для использования MCP инструментов в LM Studio
+            </template>
+          </n-form-item>
+
+          <n-form-item label="Интеграции (JSON)" path="lmstudioIntegrations">
+            <n-input
+              v-model:value="appStore.settings.lmstudioIntegrations"
+              type="textarea"
+              :autosize="{ minRows: 3, maxRows: 10 }"
+              placeholder='[
+  {
+    type: "plugin",
+    id: "mcp/deepdanbooru",
+    allowed_tools: ["tag_image"]
+  }
+]'
+            />
+            <template #feedback>
+              JSON массив интеграций (например, MCP). Передаётся напрямую в поле `integrations` API LM Studio.
+            </template>
+          </n-form-item>
+
+          <n-form-item label="Режим передачи изображения">
+            <n-radio-group v-model:value="appStore.settings.imageTransmissionMode">
+              <n-space>
+                <n-radio value="direct">Прямая передача (Base64)</n-radio>
+                <n-radio value="path">Передавать URL (путь) изображения</n-radio>
+                <n-radio value="mixed">Смешанный (Base64 + URL)</n-radio>
+              </n-space>
+            </n-radio-group>
+            <template #feedback>
+              "Прямая передача" отправляет само изображение. "Передавать URL" отправляет ссылку (работает быстрее). "Смешанный" передает и само изображение, и ссылку.
+            </template>
+          </n-form-item>
+
           <n-form-item label="Режим обработки">
             <n-radio-group v-model:value="appStore.settings.processingMode">
               <n-radio value="auto">Автоматический</n-radio>
@@ -147,7 +191,10 @@
             </template>
           </n-form-item>
 
-          <n-space justify="end">
+          <n-space justify="end" align="center">
+            <n-text v-if="isDirty" type="warning">
+              Есть несохранённые изменения
+            </n-text>
             <n-button @click="handleReset"> Сбросить </n-button>
             <n-button type="primary" :loading="saving" @click="handleSave">
               Сохранить
@@ -176,7 +223,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, h } from "vue";
+import { ref, computed, onMounted, h } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import type { FormInst, FormRules } from "naive-ui";
 import {
   NCard,
@@ -196,13 +244,17 @@ import {
   NAutoComplete,
   NSelect,
   NAvatar,
+  NText,
   useMessage,
+  useDialog,
 } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
+import type { AppSettings } from "@/stores/app";
 import { useAppStore, DEFAULT_SYSTEM_PROMPT } from "@/stores/app";
 import { useLmstudioModels } from "@/composables/useLmstudioModels";
 
 const message = useMessage();
+const dialog = useDialog();
 const appStore = useAppStore();
 const { loadingModels, modelOptions, handleModelsFetch } = useLmstudioModels();
 const formRef = ref<FormInst | null>(null);
@@ -215,6 +267,16 @@ const albumOptions = ref<
 // Локальное поле для редактирования — не трогает store напрямую
 const systemPromptDraft = ref(
   appStore.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+);
+
+// Снимок того, что реально отправлено в Rust: с ним сравниваем поля формы
+const savedSettings = ref<AppSettings>({ ...appStore.settings });
+const savedPrompt = ref(systemPromptDraft.value);
+
+const isDirty = computed(
+  () =>
+    snapshotOf(appStore.settings, systemPromptDraft.value) !==
+    snapshotOf(savedSettings.value, savedPrompt.value),
 );
 
 const rules: FormRules = {
@@ -262,11 +324,19 @@ const renderAlbumLabel = (option: {
   );
 };
 
-onMounted(() => {
-  handleModelsFetch();
+onMounted(handleModelsFetch);
+
+onBeforeRouteLeave(async () => {
+  if (!isDirty.value) {
+    return true;
+  }
+
+  console.log("[Settings] Выход со страницы с несохранёнными настройками");
+
+  return await confirmLeave();
 });
 
-async function handleSave(): Promise<void> {
+async function handleSave(): Promise<boolean> {
   saving.value = true;
   try {
     await formRef.value?.validate();
@@ -281,18 +351,28 @@ async function handleSave(): Promise<void> {
         vk_album_id: s.vkAlbumId,
         vk_owner_id: s.vkOwnerId,
         lmstudio_model: s.lmstudioModel,
+        lmstudio_token: s.lmstudioToken || "",
         process_with_caption: !!s.processPhotosWithCaption,
         rev_order: !!s.revOrder,
         temperature: s.temperature ?? 1.1,
+        image_transmission_mode: s.imageTransmissionMode ?? "direct",
+        lmstudio_integrations: s.lmstudioIntegrations ?? "",
       },
     });
     appStore.saveSettings({ ...s, systemPrompt: systemPromptToStore });
     systemPromptDraft.value = systemPrompt;
+    savedSettings.value = { ...appStore.settings };
+    savedPrompt.value = systemPrompt;
     message.success("Настройки сохранены");
+
+    return true;
   } catch (e) {
+    console.error("[Settings] Не удалось сохранить настройки", e);
     if (typeof e === "string") {
       message.error(e);
     }
+
+    return false;
   } finally {
     saving.value = false;
   }
@@ -304,13 +384,75 @@ function handleReset(): void {
     vkAlbumId: "",
     vkOwnerId: "",
     lmstudioModel: "google/gemma-3-12b",
+    lmstudioToken: "",
+    imageTransmissionMode: "direct",
     processingMode: appStore.settings.processingMode,
     systemPrompt: "",
     processPhotosWithCaption: false,
     revOrder: true,
     temperature: 1.1,
+    lmstudioIntegrations: "",
   };
   systemPromptDraft.value = DEFAULT_SYSTEM_PROMPT;
+}
+
+// Строковый слепок формы с фиксированным порядком полей — сравнивать объекты напрямую нельзя,
+// потому что handleReset пересоздаёт настройки с другим порядком ключей
+function snapshotOf(settings: AppSettings, prompt: string): string {
+  return JSON.stringify([
+    settings.vkToken,
+    settings.vkAlbumId,
+    settings.vkOwnerId,
+    settings.lmstudioModel,
+    settings.lmstudioToken ?? "",
+    settings.lmstudioIntegrations ?? "",
+    settings.imageTransmissionMode ?? "direct",
+    settings.processingMode,
+    !!settings.processPhotosWithCaption,
+    settings.revOrder !== false,
+    settings.temperature ?? 1.1,
+    prompt.trim() || DEFAULT_SYSTEM_PROMPT,
+  ]);
+}
+
+// Возвращаем форму к последнему сохранённому состоянию, чтобы store не разъезжался с Rust
+function discardChanges(): void {
+  appStore.settings = { ...savedSettings.value };
+  systemPromptDraft.value = savedPrompt.value;
+}
+
+function confirmLeave(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (leave: boolean): void => {
+      if (!settled) {
+        settled = true;
+        resolve(leave);
+      }
+    };
+
+    dialog.warning({
+      title: "Настройки не сохранены",
+      content:
+        "Изменения останутся только в форме: приложение обращается к VK и LM Studio с последними сохранёнными настройками.",
+      positiveText: "Сохранить и выйти",
+      negativeText: "Выйти без сохранения",
+      onPositiveClick: async () => {
+        const saved = await handleSave();
+        settle(saved);
+
+        // false оставляет диалог открытым, если сохранение не прошло валидацию
+        return saved;
+      },
+      onNegativeClick: () => {
+        discardChanges();
+        settle(true);
+      },
+      onClose: () => settle(false),
+      onMaskClick: () => settle(false),
+      onEsc: () => settle(false),
+    });
+  });
 }
 
 

@@ -289,14 +289,7 @@
                         </n-checkbox>
                       </n-form-item>
 
-                      <n-form-item :show-feedback="false">
-                        <n-checkbox
-                            v-model:checked="settings.disableThinking"
-                            :disabled="formDisabled"
-                        >
-                          Отключать thinking (reasoning), если модель поддерживает
-                        </n-checkbox>
-                      </n-form-item>
+
 
                       <n-form-item
                           v-if="settings.moveSkippedToUnsorted"
@@ -442,15 +435,6 @@
                             :disabled="formDisabled"
                         >
                           Перемещать нераспознанные/SKIP в отдельную папку
-                        </n-checkbox>
-                      </n-form-item>
-
-                      <n-form-item :show-feedback="false">
-                        <n-checkbox
-                            v-model:checked="templateSettings.disableThinking"
-                            :disabled="formDisabled"
-                        >
-                          Отключать thinking (reasoning), если модель поддерживает
                         </n-checkbox>
                       </n-form-item>
 

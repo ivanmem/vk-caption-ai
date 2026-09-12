@@ -227,7 +227,9 @@ async function handleStart() {
     await appStore.startProcessing();
     message.success('Обработка завершена!');
   } catch (e) {
-    message.error(String(e));
+    console.error('[HomeView] Запуск обработки не удался', e);
+    // Пояснения к ошибкам VK длинные, поэтому держим сообщение до закрытия вручную
+    message.error(String(e), { duration: 15000, closable: true });
   }
 }
 

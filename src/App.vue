@@ -83,9 +83,12 @@ onMounted(async () => {
           vk_album_id: s.vkAlbumId,
           vk_owner_id: s.vkOwnerId,
           lmstudio_model: s.lmstudioModel,
+          lmstudio_token: s.lmstudioToken || "",
           process_with_caption: !!s.processPhotosWithCaption,
           rev_order: s.revOrder !== false,
           temperature: s.temperature ?? 1.1,
+          image_transmission_mode: s.imageTransmissionMode ?? "direct",
+          lmstudio_integrations: s.lmstudioIntegrations ?? "",
         },
       });
     } catch (e) {

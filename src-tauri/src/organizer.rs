@@ -108,85 +108,98 @@ pub async fn organizer_classify_image(
     folders: Vec<String>,
     model_override: Option<String>,
     temperature_override: Option<f32>,
-    disable_thinking: Option<bool>,
 ) -> Result<ClassifyResult, String> {
     if folders.is_empty() {
         return Err("Список папок пуст. Укажите хотя бы одну папку назначения.".into());
     }
 
     // Параметры берём из общих настроек, но позволяем переопределить
-    let (model, temperature) = {
+    let (model, temperature, image_mode, lm_token, lm_integrations) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         let m = model_override
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| s.lmstudio_model.clone());
         let t = temperature_override.unwrap_or(s.temperature);
-        (m, t)
+        (m, t, s.image_transmission_mode.clone(), s.lmstudio_token.clone(), s.lmstudio_integrations.clone())
     };
 
-    let raw_bytes = std::fs::read(&file_path)
-        .map_err(|e| format!("Не удалось прочитать файл «{}»: {}", file_path, e))?;
+    let data_uri = if image_mode == "path" {
+        String::new()
+    } else {
+        let raw_bytes = std::fs::read(&file_path)
+            .map_err(|e| format!("Не удалось прочитать файл «{}»: {}", file_path, e))?;
 
-    // Пережимаем в JPEG ≤ MAX_IMAGE_SIDE. Если декодирование не удалось
-    // (например, HEIC, который image-крейт не умеет) — шлём оригинальные байты,
-    // чтобы хотя бы маленькие файлы дошли как раньше.
-    let (jpeg_bytes, used_resize) = match prepare_image_jpeg(&raw_bytes, MAX_IMAGE_SIDE) {
-        Ok(b) => (b, true),
-        Err(e) => {
-            println!(
-                "[organizer] не удалось пережать «{}»: {} → шлём как есть",
-                file_path, e
-            );
-            (raw_bytes, false)
-        }
+        let (jpeg_bytes, used_resize) = match prepare_image_jpeg(&raw_bytes, MAX_IMAGE_SIDE) {
+            Ok(b) => (b, true),
+            Err(e) => {
+                println!(
+                    "[organizer] не удалось пережать «{}»: {} → шлём как есть",
+                    file_path, e
+                );
+                (raw_bytes, false)
+            }
+        };
+
+        let b64 = general_purpose::STANDARD.encode(&jpeg_bytes);
+        println!(
+            "[organizer] {} resized={}, payload bytes (jpeg)={}",
+            file_path,
+            used_resize,
+            jpeg_bytes.len()
+        );
+        format!("data:image/jpeg;base64,{}", b64)
     };
-
-    let b64 = general_purpose::STANDARD.encode(&jpeg_bytes);
-    // ВАЖНО: всегда подписываем как image/jpeg — LMStudio декодирует по бинарному
-    // содержимому, а на «честный» MIME (image/webp и т.п.) её парсер ругается
-    // ошибкой `'url' field must be a base64 encoded image`.
-    // Так уже сделано в `generate_caption` — оставляем единообразно.
-    let data_uri = format!("data:image/jpeg;base64,{}", b64);
-
-    println!(
-        "[organizer] {} resized={}, payload bytes (jpeg)={}",
-        file_path,
-        used_resize,
-        jpeg_bytes.len()
-    );
 
     let system_prompt = build_system_prompt(&folders, &user_rules);
-    let user_text =
+    let mut user_text =
         "Проанализируй изображение и выбери одну папку. Верни строго формат <folder>...</folder>."
             .to_string();
 
+    if image_mode == "mixed" || image_mode == "path" {
+        user_text = format!("{}\n\nURL\\Path images: {}", user_text, file_path);
+    }
+
+    let mut content_array = vec![serde_json::json!({"type": "text", "content": user_text})];
+    if image_mode != "path" {
+        content_array.push(serde_json::json!({"type": "image", "data_url": data_uri}));
+    }
+
     let mut body = serde_json::json!({
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": data_uri}}
-            ]}
-        ],
+        "system_prompt": system_prompt,
+        "input": content_array,
         "temperature": temperature,
     });
-    let disable_thinking = disable_thinking.unwrap_or(false);
-    if disable_thinking {
-        body["chat_template_kwargs"] = serde_json::json!({
-            "enable_thinking": false
-        });
+
+
+    if !lm_integrations.trim().is_empty() {
+        match serde_json::from_str::<serde_json::Value>(&lm_integrations) {
+            Ok(parsed) => {
+                if parsed.is_array() {
+                    body["integrations"] = parsed;
+                } else {
+                    return Err(format!("Поле Интеграции должно быть JSON массивом: {}", lm_integrations));
+                }
+            }
+            Err(e) => {
+                return Err(format!("Ошибка парсинга JSON в поле Интеграции: {}\nПроверьте, что все ключи в двойных кавычках!", e));
+            }
+        }
     }
 
     let client = state.client.clone();
     println!(
-        "[organizer] classify {} (model={}, temperature={}, disable_thinking={}, folders={:?})",
-        file_path, model, temperature, disable_thinking, folders
+        "[organizer] classify {} (model={}, temperature={}, folders={:?})",
+        file_path, model, temperature, folders
     );
 
-    let resp = client
-        .post("http://localhost:1234/v1/chat/completions")
-        .json(&body)
+    let mut req = client.post("http://localhost:1234/api/v1/chat")
+        .json(&body);
+    if !lm_token.is_empty() {
+        req = req.bearer_auth(&lm_token);
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Ошибка соединения с LMStudio: {}", e))?;
@@ -214,23 +227,14 @@ pub async fn organizer_classify_image(
     let json: serde_json::Value = serde_json::from_str(&body_text)
         .map_err(|e| format!("Не JSON в ответе LMStudio ({}): {}", e, truncate_for_log(&body_text, 500)))?;
 
-    // Иногда модель возвращает «рассуждения» отдельно от content (поле reasoning_content).
-    // Берём content + (если пуст) reasoning_content — пригодится тем моделям, что сваливают весь ответ туда.
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let reasoning = json["choices"][0]["message"]["reasoning_content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    let raw = if content.trim().is_empty() && !reasoning.trim().is_empty() {
-        println!("[organizer] content пустой, используем reasoning_content");
-        reasoning
-    } else {
-        content
-    };
+    let mut raw = String::new();
+    if let Some(arr) = json["output"].as_array() {
+        for item in arr {
+            if let Some(c) = item["content"].as_str() {
+                raw.push_str(c);
+            }
+        }
+    }
 
     if raw.trim().is_empty() {
         return Err(format!(
@@ -263,20 +267,19 @@ pub async fn organizer_generate_folders(
     existing_folders: Vec<String>,
     model_override: Option<String>,
     temperature_override: Option<f32>,
-    disable_thinking: Option<bool>,
 ) -> Result<Vec<String>, String> {
     let trimmed_rules = user_rules.trim();
     if trimmed_rules.is_empty() {
         return Err("Опишите правила классификации, чтобы модель смогла предложить папки.".into());
     }
 
-    let (model, temperature) = {
+    let (model, temperature, lm_token, lm_integrations) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         let m = model_override
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| s.lmstudio_model.clone());
         let t = temperature_override.unwrap_or(s.temperature);
-        (m, t)
+        (m, t, s.lmstudio_token.clone(), s.lmstudio_integrations.clone())
     };
 
     let system_prompt = build_folders_system_prompt(&existing_folders, trimmed_rules);
@@ -284,28 +287,42 @@ pub async fn organizer_generate_folders(
 
     let mut body = serde_json::json!({
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
+        "system_prompt": system_prompt,
+        "input": [
+            { "type": "text", "content": user_text }
         ],
         "temperature": temperature,
     });
-    let disable_thinking = disable_thinking.unwrap_or(false);
-    if disable_thinking {
-        body["chat_template_kwargs"] = serde_json::json!({
-            "enable_thinking": false
-        });
+
+
+    if !lm_integrations.trim().is_empty() {
+        match serde_json::from_str::<serde_json::Value>(&lm_integrations) {
+            Ok(parsed) => {
+                if parsed.is_array() {
+                    body["integrations"] = parsed;
+                } else {
+                    return Err(format!("Поле Интеграции должно быть JSON массивом: {}", lm_integrations));
+                }
+            }
+            Err(e) => {
+                return Err(format!("Ошибка парсинга JSON в поле Интеграции: {}\nПроверьте, что все ключи в двойных кавычках!", e));
+            }
+        }
     }
 
     let client = state.client.clone();
     println!(
-        "[organizer] generate folders (model={}, temperature={}, disable_thinking={}, existing={:?})",
-        model, temperature, disable_thinking, existing_folders
+        "[organizer] generate folders (model={}, temperature={}, existing={:?})",
+        model, temperature, existing_folders
     );
 
-    let resp = client
-        .post("http://localhost:1234/v1/chat/completions")
-        .json(&body)
+    let mut req = client.post("http://localhost:1234/api/v1/chat")
+        .json(&body);
+    if !lm_token.is_empty() {
+        req = req.bearer_auth(&lm_token);
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Ошибка соединения с LMStudio: {}", e))?;
@@ -333,21 +350,14 @@ pub async fn organizer_generate_folders(
     let json: serde_json::Value = serde_json::from_str(&body_text)
         .map_err(|e| format!("Не JSON в ответе LMStudio ({}): {}", e, truncate_for_log(&body_text, 500)))?;
 
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let reasoning = json["choices"][0]["message"]["reasoning_content"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    let raw = if content.trim().is_empty() && !reasoning.trim().is_empty() {
-        println!("[organizer] generate folders: content пустой, используем reasoning_content");
-        reasoning
-    } else {
-        content
-    };
+    let mut raw = String::new();
+    if let Some(arr) = json["output"].as_array() {
+        for item in arr {
+            if let Some(c) = item["content"].as_str() {
+                raw.push_str(c);
+            }
+        }
+    }
 
     if raw.trim().is_empty() {
         return Err(format!(

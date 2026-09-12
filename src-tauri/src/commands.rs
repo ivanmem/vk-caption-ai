@@ -14,15 +14,25 @@ pub struct AppSettings {
     pub vk_owner_id: String,
     pub lmstudio_model: String,
     #[serde(default)]
+    pub lmstudio_token: String,
+    #[serde(default)]
     pub process_with_caption: bool,
     #[serde(default = "default_true")]
     pub rev_order: bool,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    #[serde(default = "default_image_mode")]
+    pub image_transmission_mode: String,
+    #[serde(default)]
+    pub lmstudio_integrations: String,
 }
 
 fn default_temperature() -> f32 {
     1.1
+}
+
+fn default_image_mode() -> String {
+    "direct".to_string()
 }
 
 
@@ -37,9 +47,12 @@ impl Default for AppSettings {
             vk_album_id: String::new(),
             vk_owner_id: String::new(),
             lmstudio_model: "google/gemma-3-12b".to_string(),
+            lmstudio_token: String::new(),
             process_with_caption: false,
             rev_order: true,
             temperature: 1.1,
+            image_transmission_mode: "direct".to_string(),
+            lmstudio_integrations: String::new(),
         }
     }
 }
@@ -117,6 +130,11 @@ pub fn save_settings(app: AppHandle, state: State<AppState>, settings: AppSettin
     Ok(())
 }
 
+/// Коды VK, которые однозначно означают проблему с токеном, а не с лимитами или доступом.
+const VK_AUTH_ERROR_CODES: [i64; 4] = [5, 17, 27, 28];
+
+const VK_AUTH_HINT: &str = "Откройте Настройки, проверьте VK Token и нажмите «Сохранить»: запросы уходят с токеном из последнего сохранения, а не с тем, что набран в поле.";
+
 #[tauri::command]
 pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<Vec<PhotoTask>, String> {
     let (vk_token, album_id, owner_id, process_with_caption, rev_order) = {
@@ -163,10 +181,8 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
     let mut json: serde_json::Value = resp.json().await
         .map_err(|e| format!("Ошибка парсинга ответа VK: {}", e))?;
 
-    if let Some(err) = json.get("error") {
-        let code = err["error_code"].as_i64().unwrap_or(0);
-        let msg = err["error_msg"].as_str().unwrap_or("неизвестная ошибка");
-        return Err(format!("VK API ошибка {}: {}", code, msg));
+    if let Some((code, msg)) = vk_error_parts(&json) {
+        return Err(vk_error_message(&state.client, &vk_token, code, &msg).await);
     }
 
     let items_array = json["response"]["items"].as_array()
@@ -250,14 +266,19 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
 
 #[tauri::command]
 pub async fn generate_caption(state: State<'_, AppState>, image_url: String, system_prompt: String, user_comment: Option<String>) -> Result<String, String> {
-    let (model, temperature) = {
+    let (model, temperature, image_mode, lm_token, lm_integrations) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.lmstudio_model.clone(), s.temperature)
+        (s.lmstudio_model.clone(), s.temperature, s.image_transmission_mode.clone(), s.lmstudio_token.clone(), s.lmstudio_integrations.clone())
     };
     let client = state.client.clone();
-    let bytes = client.get(&image_url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
-    let b64 = general_purpose::STANDARD.encode(&bytes);
-    let data_uri = format!("data:image/jpeg;base64,{}", b64);
+    
+    let image_content_url = if image_mode == "path" {
+        String::new()
+    } else {
+        let bytes = client.get(&image_url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
+        let b64 = general_purpose::STANDARD.encode(&bytes);
+        format!("data:image/jpeg;base64,{}", b64)
+    };
 
     const SYSTEM_RETRY: &str = "Ответ должен быть строго JSON-массивом строк. Ничего кроме этого. Пример: [\"тег1\", \"тег2\"]";
 
@@ -269,28 +290,64 @@ pub async fn generate_caption(state: State<'_, AppState>, image_url: String, sys
     let mut last_caption = String::new();
 
     for attempt in 1u8..=3 {
-        let (system_msg, user_text) = if attempt > 1 {
-            (SYSTEM_RETRY.to_string(), "Верни только JSON-массив!".to_string())
+        let system_msg = if attempt > 1 {
+            SYSTEM_RETRY.to_string()
         } else {
-            (system_prompt.clone(), base_user_text.clone())
+            system_prompt.clone()
         };
 
-        let body = serde_json::json!({
+        let mut user_text = if attempt > 1 {
+            "Верни только JSON-массив!".to_string()
+        } else {
+            base_user_text.clone()
+        };
+
+        if image_mode == "mixed" || image_mode == "path" {
+            user_text = format!("{}\n\nURL\\Path images: {}", user_text, image_url);
+        }
+
+        let mut content_array = vec![serde_json::json!({"type": "text", "content": user_text})];
+        if image_mode != "path" {
+            content_array.push(serde_json::json!({"type": "image", "data_url": image_content_url}));
+        }
+
+        let mut body = serde_json::json!({
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": data_uri}}
-                ]}
-            ],
+            "system_prompt": system_msg,
+            "input": content_array,
             "temperature": temperature,
         });
 
-        let resp = client.post("http://localhost:1234/v1/chat/completions")
-            .json(&body).send().await.map_err(|e| e.to_string())?;
+        if !lm_integrations.trim().is_empty() {
+            match serde_json::from_str::<serde_json::Value>(&lm_integrations) {
+                Ok(parsed) => {
+                    if parsed.is_array() {
+                        body["integrations"] = parsed;
+                    } else {
+                        return Err(format!("Поле Интеграции должно быть JSON массивом: {}", lm_integrations));
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("Ошибка парсинга JSON в поле Интеграции: {}\nПроверьте, что все ключи в двойных кавычках!", e));
+                }
+            }
+        }
+
+        let mut req = client.post("http://localhost:1234/api/v1/chat")
+            .json(&body);
+        if !lm_token.is_empty() {
+            req = req.bearer_auth(&lm_token);
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
         let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let raw = json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+        let mut raw = String::new();
+        if let Some(arr) = json["output"].as_array() {
+            for item in arr {
+                if let Some(c) = item["content"].as_str() {
+                    raw.push_str(c);
+                }
+            }
+        }
         let caption = parse_caption(&raw);
 
     if !caption.is_empty() && caption.contains('"') {
@@ -307,25 +364,97 @@ pub async fn generate_caption(state: State<'_, AppState>, image_url: String, sys
 pub async fn save_photo_caption(state: State<'_, AppState>, photo_id: u64, owner_id: i64, caption: String) -> Result<(), String> {
     let vk_token = { let s = state.settings.lock().map_err(|e| e.to_string())?; s.vk_token.clone() };
     let client = state.client.clone();
-    let params = [("photo_id", photo_id.to_string()), ("owner_id", owner_id.to_string()), ("caption", caption), ("access_token", vk_token), ("v", "5.131".to_string())];
+    let params = [("photo_id", photo_id.to_string()), ("owner_id", owner_id.to_string()), ("caption", caption), ("access_token", vk_token.clone()), ("v", "5.131".to_string())];
     let resp = client.post("https://api.vk.com/method/photos.edit").form(&params).send().await.map_err(|e| e.to_string())?;
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    if json["error"].is_object() { return Err(format!("VK Error: {:?}", json["error"])); }
+    if let Some((code, msg)) = vk_error_parts(&json) {
+        return Err(vk_error_message(&client, &vk_token, code, &msg).await);
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub async fn list_lmstudio_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let client = state.client.clone();
-    let resp = client.get("http://localhost:1234/v1/models")
+    let lm_token = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        s.lmstudio_token.clone()
+    };
+    
+    let mut req = client.get("http://localhost:1234/v1/models");
+    if !lm_token.is_empty() {
+        req = req.bearer_auth(&lm_token);
+    }
+    
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("Ошибка подключения к LMStudio: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(format!("LMStudio вернул ошибку {}: {}", status, err_body));
+    }
 
     let json: ModelsResponse = resp.json().await
         .map_err(|e| format!("Ошибка парсинга ответа от LMStudio: {}", e))?;
 
     Ok(json.data.into_iter().map(|m| m.id).collect())
+}
+
+/// Достаёт код и текст ошибки из ответа VK.
+fn vk_error_parts(json: &serde_json::Value) -> Option<(i64, String)> {
+    let err = json.get("error")?;
+    let code = err["error_code"].as_i64().unwrap_or(0);
+    let msg = err["error_msg"].as_str().unwrap_or("неизвестная ошибка").to_string();
+    Some((code, msg))
+}
+
+/// Превращает ошибку VK в понятный пользователю текст.
+/// Для кодов лимитов (Flood control и прочее) дополнительно проверяет токен: VK отвечает
+/// антифлудом в том числе на запросы с протухшим токеном, и настоящая причина теряется.
+async fn vk_error_message(client: &Client, token: &str, code: i64, msg: &str) -> String {
+    println!("[vk] error_code={} error_msg={}", code, msg);
+
+    if VK_AUTH_ERROR_CODES.contains(&code) {
+        return format!("Ошибка авторизации VK ({}): {}. {}", code, msg, VK_AUTH_HINT);
+    }
+
+    match code {
+        // Эти коды VK отдаёт и на мёртвый токен тоже («token required», антифлуд по протухшему
+        // токену), поэтому причину уточняем отдельной проверкой
+        6 | 9 | 15 | 29 | 200 => {
+            if let Some(auth_code) = vk_token_auth_error(client, token).await {
+                return format!(
+                    "Ошибка авторизации VK: токен недействителен или устарел (код проверки {}). {}",
+                    auth_code, VK_AUTH_HINT
+                );
+            }
+
+            match code {
+                15 | 200 => format!("Нет доступа ({}): {}. Проверьте Album ID и Owner ID в Настройках.", code, msg),
+                _ => format!("VK API ошибка {}: {}. Слишком много запросов к VK — подождите немного и повторите.", code, msg),
+            }
+        }
+        100 => format!("VK API ошибка {}: {}. Проверьте Album ID и Owner ID в Настройках.", code, msg),
+        _ => format!("VK API ошибка {}: {}", code, msg),
+    }
+}
+
+/// Проверяет токен лёгким запросом. Возвращает код ошибки авторизации, если токен мёртв.
+async fn vk_token_auth_error(client: &Client, token: &str) -> Option<i64> {
+    let resp = client
+        .get("https://api.vk.com/method/users.get")
+        .query(&[("access_token", token), ("v", "5.131")])
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let code = json["error"]["error_code"].as_i64()?;
+    println!("[vk] проверка токена users.get -> error_code={}", code);
+
+    VK_AUTH_ERROR_CODES.contains(&code).then_some(code)
 }
 
 fn get_optimal_size(sizes: &[PhotoSize]) -> String {
