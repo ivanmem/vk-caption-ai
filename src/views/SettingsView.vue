@@ -1,231 +1,163 @@
 <template>
   <div class="settings-view">
-    <n-card title="Настройки приложения" class="settings-card">
-      <n-space vertical size="large">
-        <n-alert type="info" title="LMStudio">
-          Убедитесь, что LMStudio запущен и vision модель загружена перед
-          началом работы.
-        </n-alert>
+    <div class="settings-page">
+      <!-- Панель действий закреплена сверху: до «Сохранить» не надо скроллить -->
+      <div
+        class="settings-bar"
+        :style="{
+          background: themeVars.bodyColor,
+          borderColor: themeVars.dividerColor,
+        }"
+      >
+        <div class="settings-bar__title">
+          <h2>Настройки</h2>
+          <n-text v-if="isDirty" type="warning" class="settings-bar__hint">
+            Есть несохранённые изменения
+          </n-text>
+          <n-text v-else depth="3" class="settings-bar__hint">
+            Всё сохранено
+          </n-text>
+        </div>
 
+        <n-space align="center">
+          <n-button quaternary @click="handleReset">Сбросить</n-button>
+          <n-tooltip>
+            <template #trigger>
+              <n-button type="primary" :loading="saving" @click="handleSave">
+                <template #icon>
+                  <n-icon :component="SaveIcon" />
+                </template>
+                Сохранить
+              </n-button>
+            </template>
+            Ctrl + S
+          </n-tooltip>
+        </n-space>
+      </div>
+
+      <n-card class="settings-card">
         <n-form
           ref="formRef"
           :model="appStore.settings"
           :rules="rules"
           label-placement="top"
-          label-width="120"
         >
-          <n-form-item label="VK Token" path="vkToken">
-            <n-input
-              v-model:value="appStore.settings.vkToken"
-              type="password"
-              placeholder="vk1.a..."
-              show-password-on="click"
-            />
-          </n-form-item>
+          <n-tabs v-model:value="activeTab" type="line" animated>
+          <n-tab-pane name="vk" tab="ВКонтакте">
+            <n-form-item label="VK Token" path="vkToken">
+              <n-space vertical style="width: 100%">
+                <n-input-group>
+                  <n-input
+                    v-model:value="appStore.settings.vkToken"
+                    type="password"
+                    placeholder="vk1.a..."
+                    show-password-on="click"
+                  />
+                  <n-button :loading="checkingToken" @click="handleCheckToken">
+                    <template #icon>
+                      <n-icon :component="CheckIcon" />
+                    </template>
+                    Проверить
+                  </n-button>
+                </n-input-group>
+                <n-text
+                  v-if="tokenStatus"
+                  :type="tokenStatus.ok ? 'success' : 'error'"
+                  style="font-size: 13px"
+                >
+                  {{ tokenStatus.text }}
+                </n-text>
+              </n-space>
+            </n-form-item>
 
-          <n-form-item label="VK Token" path="vkToken">
-            <n-alert type="info" :bordered="false">
-              <template #header>Как получить VK Token</template>
-              <ol>
-                <li>
-                  Перейдите на
-                  <n-a href="https://vkhost.github.io/" target="_blank"
-                    >vkhost.github.io</n-a
-                  >
-                </li>
-                <li>
-                  Выберите <strong>VK Admin</strong> (или другое приложение)
-                </li>
-                <li>
-                  Нажмите <strong>Разрешить</strong> и скопируйте токен из
-                  адресной строки
-                </li>
-              </ol>
+            <n-form-item label="Альбом" path="vkAlbumId">
+              <n-select
+                v-model:value="appStore.settings.vkAlbumId"
+                filterable
+                tag
+                :options="albumOptions"
+                :loading="loadingAlbums"
+                :render-label="renderAlbumLabel"
+                placeholder="100 (или выберите)"
+                @focus="handleAlbumsFetch"
+              />
+            </n-form-item>
+
+            <n-form-item label="Owner ID" path="vkOwnerId">
+              <n-input
+                v-model:value="appStore.settings.vkOwnerId"
+                placeholder="Опционально"
+              />
+              <template #feedback>
+                ID владельца, если альбом не ваш. Оставьте пустым для своих
+                альбомов.
+              </template>
+            </n-form-item>
+
+            <n-form-item label="Какие фото брать">
+              <n-space vertical>
+                <n-checkbox
+                  v-model:checked="appStore.settings.processPhotosWithCaption"
+                >
+                  Обрабатывать фото с уже заполненным описанием
+                </n-checkbox>
+                <n-checkbox v-model:checked="appStore.settings.revOrder">
+                  Обратный порядок (сначала новые)
+                </n-checkbox>
+              </n-space>
+            </n-form-item>
+
+            <n-collapse>
+              <n-collapse-item title="Как получить VK Token" name="howto">
+                <ol>
+                  <li>
+                    Перейдите на
+                    <n-a href="https://vkhost.github.io/" target="_blank">
+                      vkhost.github.io
+                    </n-a>
+                  </li>
+                  <li>
+                    Выберите <strong>VK Admin</strong> (или другое приложение)
+                  </li>
+                  <li>
+                    Нажмите <strong>Разрешить</strong> и скопируйте токен из
+                    адресной строки
+                  </li>
+                </ol>
+              </n-collapse-item>
+            </n-collapse>
+          </n-tab-pane>
+
+          <n-tab-pane name="model" tab="Модель">
+            <n-alert type="info" title="LM Studio" style="margin-bottom: 16px">
+              LM Studio должен быть запущен на порту 1234, а модель —
+              поддерживать vision. Рекомендуемая:
+              <strong>google/gemma-4-31b</strong>.
             </n-alert>
-          </n-form-item>
 
-          <n-form-item label="VK Album ID" path="vkAlbumId">
-            <n-select
-              v-model:value="appStore.settings.vkAlbumId"
-              filterable
-              tag
-              :options="albumOptions"
-              :loading="loadingAlbums"
-              :render-label="renderAlbumLabel"
-              placeholder="100 (или выберите)"
-              @focus="handleAlbumsFetch"
-            />
-          </n-form-item>
-
-          <n-form-item label="VK Owner ID" path="vkOwnerId">
-            <n-input
-              v-model:value="appStore.settings.vkOwnerId"
-              placeholder="Опционально"
-            />
-            <template #feedback>
-              ID владельца, если альбом не ваш. Оставьте пустым для своих
-              альбомов.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="LMStudio Model" path="lmstudioModel">
-            <n-auto-complete
-              v-model:value="appStore.settings.lmstudioModel"
-              :options="modelOptions"
-              :loading="loadingModels"
-              placeholder="google/gemma-3-12b"
-              clearable
-              :get-show="() => true"
-              @focus="handleModelsFetch"
-            />
-            <template #feedback>
-              Модель должна поддерживать vision (распознавание изображений)
-            </template>
-          </n-form-item>
-
-          <n-form-item label="LM Studio Token (опционально)" path="lmstudioToken">
-            <n-input
-              v-model:value="appStore.settings.lmstudioToken"
-              type="password"
-              placeholder="sk-..."
-              show-password-on="click"
-              clearable
-            />
-            <template #feedback>
-              Необходим для использования MCP инструментов в LM Studio
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Интеграции (JSON)" path="lmstudioIntegrations">
-            <n-input
-              v-model:value="appStore.settings.lmstudioIntegrations"
-              type="textarea"
-              :autosize="{ minRows: 3, maxRows: 10 }"
-              placeholder='[
-  {
-    type: "plugin",
-    id: "mcp/deepdanbooru",
-    allowed_tools: ["tag_image"]
-  }
-]'
-            />
-            <template #feedback>
-              JSON массив интеграций (например, MCP). Передаётся напрямую в поле `integrations` API LM Studio.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Режим передачи изображения">
-            <n-radio-group v-model:value="appStore.settings.imageTransmissionMode">
-              <n-space>
-                <n-radio value="direct">Прямая передача (Base64)</n-radio>
-                <n-radio value="path">Передавать URL (путь) изображения</n-radio>
-                <n-radio value="mixed">Смешанный (Base64 + URL)</n-radio>
-              </n-space>
-            </n-radio-group>
-            <template #feedback>
-              "Прямая передача" отправляет само изображение. "Передавать URL" отправляет ссылку (работает быстрее). "Смешанный" передает и само изображение, и ссылку.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Режим обработки">
-            <n-radio-group v-model:value="appStore.settings.processingMode">
-              <n-radio value="auto">Автоматический</n-radio>
-              <n-radio value="manual">Ручной</n-radio>
-            </n-radio-group>
-            <template #feedback>
-              Ручной режим показывает модальное окно перед каждым сохранением
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Пауза перед сохранением в VK">
-            <n-space align="center">
-              <span>от</span>
-              <n-input-number
-                v-model:value="appStore.settings.saveDelayMinSec"
-                :min="0"
-                :max="600"
-                size="small"
-                style="width: 110px"
+            <n-form-item label="Модель" path="lmstudioModel">
+              <n-auto-complete
+                v-model:value="appStore.settings.lmstudioModel"
+                :options="modelOptions"
+                :loading="loadingModels"
+                placeholder="google/gemma-3-12b"
+                clearable
+                :get-show="() => true"
+                @focus="handleModelsFetch"
               />
-              <span>до</span>
-              <n-input-number
-                v-model:value="appStore.settings.saveDelayMaxSec"
-                :min="0"
-                :max="600"
-                size="small"
-                style="width: 110px"
-              />
-              <span>секунд</span>
-            </n-space>
-            <template #feedback>
-              Случайная задержка перед каждой записью описания в VK, сверх
-              времени генерации. Нужна, чтобы VK не принял поток правок за
-              взлом. Ревью и ваши раздумья в ручном режиме идут в счёт этой
-              паузы.
-            </template>
-          </n-form-item>
+            </n-form-item>
 
-          <n-form-item label="Лимит сохранений за запуск">
-            <n-input-number
-              v-model:value="appStore.settings.maxSavesPerRun"
-              :min="0"
-              :max="10000"
-              size="small"
-              style="width: 140px"
-            />
-            <template #feedback>
-              Сколько описаний разрешено записать в VK за один запуск. VK смотрит
-              не только на частоту правок, но и на их количество за день, поэтому
-              большой альбом лучше проходить за несколько заходов. 0 — без
-              лимита.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Предгенерация в ручном режиме">
-            <n-input-number
-              v-model:value="appStore.settings.prefetchCount"
-              :min="0"
-              :max="10"
-              size="small"
-              style="width: 110px"
-            />
-            <template #feedback>
-              Сколько следующих описаний готовить в фоне, пока вы смотрите
-              текущее. Ничего не сохраняется, только подготавливается. 0 —
-              выключено.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Авто-ревью описаний">
-            <n-space vertical style="width: 100%">
-              <n-checkbox v-model:checked="appStore.settings.autoReviewEnabled">
-                Проверять готовое описание второй моделью и перегенерировать с
-                замечанием
-              </n-checkbox>
-              <n-space v-if="appStore.settings.autoReviewEnabled" align="center">
-                <span>Попыток перегенерации:</span>
-                <n-input-number
-                  v-model:value="appStore.settings.reviewMaxRetries"
-                  :min="1"
-                  :max="5"
-                  size="small"
-                  style="width: 110px"
-                />
-              </n-space>
-              <div
-                v-if="appStore.settings.autoReviewEnabled"
-                style="display: flex; align-items: center; width: 100%; gap: 16px"
-              >
-                <span style="white-space: nowrap">Температура ревью:</span>
+            <n-form-item label="Температура генерации" path="temperature">
+              <div class="slider-row">
                 <n-slider
-                  v-model:value="appStore.settings.reviewTemperature"
+                  v-model:value="appStore.settings.temperature"
                   :min="0.0"
                   :max="2.0"
                   :step="0.05"
                   style="flex: 1"
                 />
                 <n-input-number
-                  v-model:value="appStore.settings.reviewTemperature"
+                  v-model:value="appStore.settings.temperature"
                   :min="0.0"
                   :max="2.0"
                   :step="0.05"
@@ -233,118 +165,218 @@
                   style="width: 100px"
                 />
               </div>
-            </n-space>
-            <template #feedback>
-              Ревьюеру креативность не нужна: чем ниже температура, тем
-              стабильнее вердикт. По умолчанию 0.3.
-            </template>
-          </n-form-item>
+              <template #feedback>
+                Влияет на креативность ответов. По умолчанию 1.1
+              </template>
+            </n-form-item>
 
-          <n-form-item
-            v-if="appStore.settings.autoReviewEnabled"
-            label="Промпт ревью"
-            path="reviewPrompt"
-          >
-            <n-input
-              v-model:value="reviewPromptDraft"
-              type="textarea"
-              :autosize="{ minRows: 4, maxRows: 12 }"
-              placeholder="Оставьте пустым для сброса к стандартному промпту ревью"
-            />
-            <template #feedback>
-              Ревьюер видит картинку, правила из системного промпта и готовое
-              описание. Отвечать он должен JSON-объектом с полями ok и comment.
-            </template>
-          </n-form-item>
-
-          <n-form-item label="Загрузка фото">
-            <n-space vertical>
-              <n-checkbox
-                v-model:checked="appStore.settings.processPhotosWithCaption"
+            <n-form-item label="Режим передачи изображения">
+              <n-radio-group
+                v-model:value="appStore.settings.imageTransmissionMode"
               >
-                Обрабатывать фото с уже заполненным описанием
-              </n-checkbox>
-              <n-checkbox v-model:checked="appStore.settings.revOrder">
-                Обратный порядок (сначала новые)
-              </n-checkbox>
-            </n-space>
-          </n-form-item>
+                <n-space>
+                  <n-radio value="direct">Base64</n-radio>
+                  <n-radio value="path">Только URL</n-radio>
+                  <n-radio value="mixed">Base64 + URL</n-radio>
+                </n-space>
+              </n-radio-group>
+              <template #feedback>
+                Base64 отправляет само изображение, URL работает быстрее,
+                смешанный режим передаёт и то и другое.
+              </template>
+            </n-form-item>
 
-          <n-form-item label="Температура (креативность)" path="temperature">
-            <div
-              style="display: flex; align-items: center; width: 100%; gap: 16px"
+            <n-form-item
+              label="Токен LM Studio (опционально)"
+              path="lmstudioToken"
             >
-              <n-slider
-                v-model:value="appStore.settings.temperature"
-                :min="0.0"
-                :max="2.0"
-                :step="0.05"
-                style="flex: 1"
+              <n-input
+                v-model:value="appStore.settings.lmstudioToken"
+                type="password"
+                placeholder="sk-..."
+                show-password-on="click"
+                clearable
               />
+              <template #feedback>
+                Нужен для MCP-инструментов в LM Studio
+              </template>
+            </n-form-item>
+
+            <n-form-item label="Интеграции (JSON)" path="lmstudioIntegrations">
+              <n-input
+                v-model:value="appStore.settings.lmstudioIntegrations"
+                type="textarea"
+                :autosize="{ minRows: 3, maxRows: 10 }"
+                placeholder='[{ "type": "plugin", "id": "mcp/deepdanbooru", "allowed_tools": ["tag_image"] }]'
+              />
+              <template #feedback>
+                JSON-массив интеграций, уходит в поле `integrations` API LM
+                Studio.
+              </template>
+            </n-form-item>
+          </n-tab-pane>
+
+          <n-tab-pane name="run" tab="Обработка">
+            <n-form-item label="Режим">
+              <n-radio-group v-model:value="appStore.settings.processingMode">
+                <n-space>
+                  <n-radio value="auto">Автоматический</n-radio>
+                  <n-radio value="manual">Ручной</n-radio>
+                </n-space>
+              </n-radio-group>
+              <template #feedback>
+                Ручной режим показывает окно подтверждения перед каждым
+                сохранением
+              </template>
+            </n-form-item>
+
+            <n-form-item label="Пауза перед сохранением в VK">
+              <n-space align="center">
+                <span>от</span>
+                <n-input-number
+                  v-model:value="appStore.settings.saveDelayMinSec"
+                  :min="0"
+                  :max="600"
+                  size="small"
+                  style="width: 110px"
+                />
+                <span>до</span>
+                <n-input-number
+                  v-model:value="appStore.settings.saveDelayMaxSec"
+                  :min="0"
+                  :max="600"
+                  size="small"
+                  style="width: 110px"
+                />
+                <span>секунд</span>
+              </n-space>
+              <template #feedback>
+                Случайная задержка перед каждой записью, сверх времени
+                генерации: поток правок без пауз VK принимает за взлом. Ревью и
+                раздумья в ручном режиме идут в счёт этой паузы.
+              </template>
+            </n-form-item>
+
+            <n-form-item label="Лимит сохранений за запуск">
               <n-input-number
-                v-model:value="appStore.settings.temperature"
-                :min="0.0"
-                :max="2.0"
-                :step="0.05"
+                v-model:value="appStore.settings.maxSavesPerRun"
+                :min="0"
+                :max="10000"
                 size="small"
-                style="width: 100px"
+                style="width: 140px"
               />
-            </div>
-            <template #feedback>
-              Влияет на креативность ответов. Значение по умолчанию: 1.1
-            </template>
-          </n-form-item>
+              <template #feedback>
+                VK смотрит и на число правок за день, поэтому большой альбом
+                лучше проходить за несколько заходов. 0 — без лимита.
+              </template>
+            </n-form-item>
 
-          <n-form-item
-            label="Системный промпт для нейросети"
-            path="systemPrompt"
-          >
-            <n-input
-              v-model:value="systemPromptDraft"
-              type="textarea"
-              :autosize="{ minRows: 5, maxRows: 12 }"
-              placeholder="Оставьте пустым для сброса к стандартному промпту"
-            />
-            <template #feedback>
-              Инструкция для модели. Если очистить и сохранить — вернётся
-              стандартный промпт.
-            </template>
-          </n-form-item>
+            <n-form-item label="Предгенерация в ручном режиме">
+              <n-input-number
+                v-model:value="appStore.settings.prefetchCount"
+                :min="0"
+                :max="10"
+                size="small"
+                style="width: 140px"
+              />
+              <template #feedback>
+                Сколько следующих описаний готовить в фоне, пока вы смотрите
+                текущее. Ничего не сохраняется, только подготавливается. 0 —
+                выключено.
+              </template>
+            </n-form-item>
+          </n-tab-pane>
 
-          <n-space justify="end" align="center">
-            <n-text v-if="isDirty" type="warning">
-              Есть несохранённые изменения
-            </n-text>
-            <n-button @click="handleReset"> Сбросить </n-button>
-            <n-button type="primary" :loading="saving" @click="handleSave">
-              Сохранить
-            </n-button>
-          </n-space>
+          <n-tab-pane name="review" tab="Ревью">
+            <n-form-item label="Авто-ревью">
+              <n-checkbox v-model:checked="appStore.settings.autoReviewEnabled">
+                Проверять готовое описание моделью и перегенерировать с
+                замечанием
+              </n-checkbox>
+              <template #feedback>
+                Модель второй раз смотрит на картинку, сверяет описание с
+                правилами и при расхождении пишет замечание — оно уходит в
+                перегенерацию так же, как ваш комментарий в ручном режиме. Цена
+                — ещё один-два запроса к модели на каждое фото.
+              </template>
+            </n-form-item>
+
+            <template v-if="appStore.settings.autoReviewEnabled">
+              <n-form-item label="Попыток перегенерации">
+                <n-input-number
+                  v-model:value="appStore.settings.reviewMaxRetries"
+                  :min="1"
+                  :max="5"
+                  size="small"
+                  style="width: 140px"
+                />
+              </n-form-item>
+
+              <n-form-item label="Температура ревью">
+                <div class="slider-row">
+                  <n-slider
+                    v-model:value="appStore.settings.reviewTemperature"
+                    :min="0.0"
+                    :max="2.0"
+                    :step="0.05"
+                    style="flex: 1"
+                  />
+                  <n-input-number
+                    v-model:value="appStore.settings.reviewTemperature"
+                    :min="0.0"
+                    :max="2.0"
+                    :step="0.05"
+                    size="small"
+                    style="width: 100px"
+                  />
+                </div>
+                <template #feedback>
+                  Ревьюеру креативность не нужна: чем ниже, тем стабильнее
+                  вердикт. По умолчанию 0.3
+                </template>
+              </n-form-item>
+
+              <n-form-item label="Промпт ревью" path="reviewPrompt">
+                <n-input
+                  v-model:value="reviewPromptDraft"
+                  type="textarea"
+                  :autosize="{ minRows: 6, maxRows: 16 }"
+                  placeholder="Оставьте пустым для сброса к стандартному промпту ревью"
+                />
+                <template #feedback>
+                  Ревьюер видит картинку, правила из системного промпта и
+                  готовое описание. Отвечать должен JSON-объектом с полями ok и
+                  comment.
+                </template>
+              </n-form-item>
+            </template>
+          </n-tab-pane>
+
+          <n-tab-pane name="prompt" tab="Промпт">
+            <n-form-item label="Системный промпт" path="systemPrompt">
+              <n-input
+                v-model:value="systemPromptDraft"
+                type="textarea"
+                :autosize="{ minRows: 12, maxRows: 28 }"
+                placeholder="Оставьте пустым для сброса к стандартному промпту"
+              />
+              <template #feedback>
+                Инструкция для модели. Если очистить и сохранить — вернётся
+                стандартный промпт.
+              </template>
+            </n-form-item>
+          </n-tab-pane>
+          </n-tabs>
         </n-form>
-
-        <n-divider />
-
-        <!-- Требования к модели -->
-        <n-space vertical>
-          <h3>Требования к модели</h3>
-          <ul>
-            <li>
-              Модель должна поддерживать vision (распознавание изображений)
-            </li>
-            <li>
-              Рекомендуемая модель: <strong>google/gemma-4-31b</strong>
-            </li>
-            <li>LMStudio должен быть запущен на порту 1234</li>
-          </ul>
-        </n-space>
-      </n-space>
-    </n-card>
+      </n-card>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from "vue";
+import { ref, computed, watch, onMounted, h } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
+import { onKeyStroke } from "@vueuse/core";
 import type { FormInst, FormRules } from "naive-ui";
 import {
   NCard,
@@ -352,11 +384,11 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NInputGroup,
   NInputNumber,
   NSlider,
   NButton,
   NAlert,
-  NDivider,
   NA,
   NRadioGroup,
   NRadio,
@@ -365,9 +397,20 @@ import {
   NSelect,
   NAvatar,
   NText,
+  NIcon,
+  NTabs,
+  NTabPane,
+  NTooltip,
+  NCollapse,
+  NCollapseItem,
   useMessage,
   useDialog,
+  useThemeVars,
 } from "naive-ui";
+import {
+  SaveOutline as SaveIcon,
+  ShieldCheckmarkOutline as CheckIcon,
+} from "@vicons/ionicons5";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "@/stores/app";
 import {
@@ -385,11 +428,15 @@ import { useLmstudioModels } from "@/composables/useLmstudioModels";
 
 const message = useMessage();
 const dialog = useDialog();
+const themeVars = useThemeVars();
 const appStore = useAppStore();
 const { loadingModels, modelOptions, handleModelsFetch } = useLmstudioModels();
 const formRef = ref<FormInst | null>(null);
+const activeTab = ref("vk");
 const saving = ref(false);
 const loadingAlbums = ref(false);
+const checkingToken = ref(false);
+const tokenStatus = ref<{ ok: boolean; text: string } | null>(null);
 const albumOptions = ref<
   Array<{ label: string; value: string; thumb?: string; size?: number }>
 >([]);
@@ -422,8 +469,6 @@ const rules: FormRules = {
   vkAlbumId: { required: true, message: "Введите ID альбома", trigger: "blur" },
 };
 
-
-
 interface VkAlbum {
   id: number;
   title: string;
@@ -431,23 +476,55 @@ interface VkAlbum {
   thumb_src?: string;
 }
 
-const renderAlbumLabel = (option: {
+interface VkError {
+  error_msg: string;
+}
+
+onMounted(handleModelsFetch);
+
+// Альбомы и статус относятся к прежнему токену, с новым они уже неправда
+watch(
+  () => appStore.settings.vkToken,
+  () => {
+    tokenStatus.value = null;
+    albumOptions.value = [];
+  },
+);
+
+onKeyStroke(["s", "S", "ы", "Ы"], (e) => {
+  if (!e.ctrlKey && !e.metaKey) {
+    return;
+  }
+
+  e.preventDefault();
+  handleSave();
+});
+
+onBeforeRouteLeave(async () => {
+  if (!isDirty.value) {
+    return true;
+  }
+
+  console.log("[Settings] Выход со страницы с несохранёнными настройками");
+
+  return await confirmLeave();
+});
+
+function renderAlbumLabel(option: {
   label: string;
   value: string;
   thumb?: string;
   size?: number;
-}) => {
+}) {
   return h(
     "div",
     { style: { display: "flex", alignItems: "center", gap: "8px" } },
     [
-      option.thumb
-        ? h(NAvatar, {
-            src: option.thumb,
-            size: "small",
-            style: { flexShrink: 0 },
-          })
-        : h(NAvatar, { size: "small", style: { flexShrink: 0 } }),
+      h(NAvatar, {
+        src: option.thumb,
+        size: "small",
+        style: { flexShrink: 0 },
+      }),
       h("div", null, [
         h("div", null, option.label),
         option.size !== undefined
@@ -460,19 +537,7 @@ const renderAlbumLabel = (option: {
       ]),
     ],
   );
-};
-
-onMounted(handleModelsFetch);
-
-onBeforeRouteLeave(async () => {
-  if (!isDirty.value) {
-    return true;
-  }
-
-  console.log("[Settings] Выход со страницы с несохранёнными настройками");
-
-  return await confirmLeave();
-});
+}
 
 async function handleSave(): Promise<boolean> {
   saving.value = true;
@@ -518,6 +583,10 @@ async function handleSave(): Promise<boolean> {
     console.error("[Settings] Не удалось сохранить настройки", e);
     if (typeof e === "string") {
       message.error(e);
+    } else {
+      // Ошибка валидации приходит массивом и относится к полям вкладки «ВКонтакте»
+      activeTab.value = "vk";
+      message.error("Проверьте обязательные поля");
     }
 
     return false;
@@ -625,8 +694,7 @@ function confirmLeave(): Promise<boolean> {
   });
 }
 
-
-
+// VK отдаёт JSONP, поэтому запросы из формы идут мимо Rust — так видно живой ли токен
 function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const script = document.createElement("script");
@@ -654,6 +722,43 @@ function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
   });
 }
 
+function vkCallbackName(): string {
+  return `vk_cb_${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
+
+async function handleCheckToken(): Promise<void> {
+  const token = appStore.settings.vkToken;
+  if (!token) {
+    message.warning("Сначала вставьте токен");
+    return;
+  }
+
+  checkingToken.value = true;
+
+  try {
+    const fnName = vkCallbackName();
+    const url = `https://api.vk.com/method/users.get?v=5.199&access_token=${token}&callback=${fnName}`;
+
+    interface VkUsersResponse {
+      response?: Array<{ first_name: string; last_name: string }>;
+      error?: VkError;
+    }
+
+    const { response, error } = await fetchJsonp<VkUsersResponse>(url, fnName);
+    const user = response?.[0];
+    console.log("[Settings] Проверка токена:", response ?? error);
+
+    tokenStatus.value = user
+      ? { ok: true, text: `Токен рабочий: ${user.first_name} ${user.last_name}` }
+      : { ok: false, text: error?.error_msg ?? "VK не принял токен" };
+  } catch (e) {
+    console.error("[Settings] Проверка токена не удалась", e);
+    tokenStatus.value = { ok: false, text: "Не удалось связаться с VK" };
+  } finally {
+    checkingToken.value = false;
+  }
+}
+
 async function handleAlbumsFetch(): Promise<void> {
   if (loadingAlbums.value || !appStore.settings.vkToken) {
     return;
@@ -662,10 +767,7 @@ async function handleAlbumsFetch(): Promise<void> {
   loadingAlbums.value = true;
 
   try {
-    const fnName =
-      "vk_cb_" +
-      Date.now().toString() +
-      Math.floor(Math.random() * 1000).toString();
+    const fnName = vkCallbackName();
     const token = appStore.settings.vkToken;
     let url = `https://api.vk.com/method/photos.getAlbums?v=5.199&need_covers=1&need_system=1&albums_ids=-15&access_token=${token}&callback=${fnName}`;
 
@@ -673,26 +775,20 @@ async function handleAlbumsFetch(): Promise<void> {
       url += `&owner_id=${appStore.settings.vkOwnerId}`;
     }
 
-    interface VkResponse {
-      response?: {
-        items: VkAlbum[];
-      };
-      error?: {
-        error_msg: string;
-      };
+    interface VkAlbumsResponse {
+      response?: { items: VkAlbum[] };
+      error?: VkError;
     }
 
-    const response = await fetchJsonp<VkResponse>(url, fnName);
+    const response = await fetchJsonp<VkAlbumsResponse>(url, fnName);
 
-    if (response.response && response.response.items) {
-      albumOptions.value = response.response.items.map((album: VkAlbum) => {
-        return {
-          label: album.title,
-          value: String(album.id),
-          thumb: album.thumb_src,
-          size: album.size,
-        };
-      });
+    if (response.response?.items) {
+      albumOptions.value = response.response.items.map((album) => ({
+        label: album.title,
+        value: String(album.id),
+        thumb: album.thumb_src,
+        size: album.size,
+      }));
     } else if (response.error) {
       console.warn("VK API error:", response.error);
       message.error(`Ошибка VK: ${response.error.error_msg}`);
@@ -708,24 +804,59 @@ async function handleAlbumsFetch(): Promise<void> {
 <style scoped lang="scss">
 .settings-view {
   height: 100%;
-  padding: $spacing-lg;
   overflow-y: auto;
 }
 
-.settings-card {
-  max-width: 800px;
+.settings-page {
+  max-width: 880px;
   margin: 0 auto;
+  padding: 0 $spacing-lg $spacing-lg;
 }
 
-h3 {
-  margin-top: $spacing-md;
-  margin-bottom: $spacing-sm;
-  font-size: 16px;
-  color: var(--n-text-color);
+// Панель живёт над карточкой и прилипает к верху прокрутки,
+// поэтому «Сохранить» видно с любой вкладки и на любой прокрутке
+.settings-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+  margin-bottom: $spacing-md;
+  padding: $spacing-md 0;
+  border-bottom: 1px solid;
+
+  h2 {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.2;
+  }
 }
 
-ol,
-ul {
+.settings-bar__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-bar__hint {
+  font-size: 12px;
+}
+
+// Подсказка под полем иначе упирается в заголовок следующего
+:deep(.n-form-item-feedback-wrapper) {
+  padding-bottom: $spacing-xs;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: $spacing-md;
+}
+
+ol {
   margin-left: $spacing-lg;
   color: var(--n-text-color);
 
