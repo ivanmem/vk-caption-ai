@@ -212,7 +212,32 @@
                   style="width: 110px"
                 />
               </n-space>
+              <div
+                v-if="appStore.settings.autoReviewEnabled"
+                style="display: flex; align-items: center; width: 100%; gap: 16px"
+              >
+                <span style="white-space: nowrap">Температура ревью:</span>
+                <n-slider
+                  v-model:value="appStore.settings.reviewTemperature"
+                  :min="0.0"
+                  :max="2.0"
+                  :step="0.05"
+                  style="flex: 1"
+                />
+                <n-input-number
+                  v-model:value="appStore.settings.reviewTemperature"
+                  :min="0.0"
+                  :max="2.0"
+                  :step="0.05"
+                  size="small"
+                  style="width: 100px"
+                />
+              </div>
             </n-space>
+            <template #feedback>
+              Ревьюеру креативность не нужна: чем ниже температура, тем
+              стабильнее вердикт. По умолчанию 0.3.
+            </template>
           </n-form-item>
 
           <n-form-item
@@ -350,6 +375,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_REVIEW_PROMPT,
   DEFAULT_REVIEW_RETRIES,
+  DEFAULT_REVIEW_TEMPERATURE,
   DEFAULT_SAVE_DELAY_MIN_SEC,
   DEFAULT_SAVE_DELAY_MAX_SEC,
   DEFAULT_PREFETCH_COUNT,
@@ -517,6 +543,7 @@ function handleReset(): void {
     autoReviewEnabled: false,
     reviewPrompt: "",
     reviewMaxRetries: DEFAULT_REVIEW_RETRIES,
+    reviewTemperature: DEFAULT_REVIEW_TEMPERATURE,
     saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
     saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
     prefetchCount: DEFAULT_PREFETCH_COUNT,
@@ -547,6 +574,7 @@ function snapshotOf(
     settings.temperature ?? 1.1,
     !!settings.autoReviewEnabled,
     settings.reviewMaxRetries ?? DEFAULT_REVIEW_RETRIES,
+    settings.reviewTemperature ?? DEFAULT_REVIEW_TEMPERATURE,
     settings.saveDelayMinSec ?? DEFAULT_SAVE_DELAY_MIN_SEC,
     settings.saveDelayMaxSec ?? DEFAULT_SAVE_DELAY_MAX_SEC,
     settings.prefetchCount ?? DEFAULT_PREFETCH_COUNT,

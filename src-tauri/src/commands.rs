@@ -350,8 +350,10 @@ pub async fn review_caption(
     caption: String,
     system_prompt: String,
     review_prompt: String,
+    temperature: f32,
 ) -> Result<CaptionReview, String> {
-    let cfg = LmConfig::load(&state)?;
+    // Ревью должно быть предсказуемым, поэтому температура своя, не как у генерации
+    let cfg = LmConfig { temperature, ..LmConfig::load(&state)? };
     let client = state.client.clone();
     let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 

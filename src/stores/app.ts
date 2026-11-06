@@ -48,6 +48,7 @@ export const DEFAULT_REVIEW_PROMPT = `Ты — строгий редактор �
 export const DEFAULT_SAVE_DELAY_MIN_SEC = 3;
 export const DEFAULT_SAVE_DELAY_MAX_SEC = 30;
 export const DEFAULT_REVIEW_RETRIES = 2;
+export const DEFAULT_REVIEW_TEMPERATURE = 0.3;
 export const DEFAULT_PREFETCH_COUNT = 1;
 export const DEFAULT_MAX_SAVES_PER_RUN = 100;
 
@@ -67,6 +68,7 @@ export interface AppSettings {
   autoReviewEnabled?: boolean;
   reviewPrompt?: string;
   reviewMaxRetries?: number;
+  reviewTemperature?: number;
   saveDelayMinSec?: number;
   saveDelayMaxSec?: number;
   prefetchCount?: number;
@@ -104,6 +106,7 @@ export const useAppStore = defineStore('app', () => {
     autoReviewEnabled: false,
     reviewPrompt: '',
     reviewMaxRetries: DEFAULT_REVIEW_RETRIES,
+    reviewTemperature: DEFAULT_REVIEW_TEMPERATURE,
     saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
     saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
     prefetchCount: DEFAULT_PREFETCH_COUNT,
@@ -224,6 +227,7 @@ export const useAppStore = defineStore('app', () => {
           caption: current,
           systemPrompt,
           reviewPrompt,
+          temperature: settings.value.reviewTemperature ?? DEFAULT_REVIEW_TEMPERATURE,
         });
       } catch (err) {
         console.error(`[Review] Ревью не удалось для фото ${photo.id}, оставляем описание как есть`, err);
@@ -622,6 +626,7 @@ export const useAppStore = defineStore('app', () => {
       ctx.store.settings.autoReviewEnabled ??= false;
       ctx.store.settings.reviewPrompt ??= '';
       ctx.store.settings.reviewMaxRetries ??= DEFAULT_REVIEW_RETRIES;
+      ctx.store.settings.reviewTemperature ??= DEFAULT_REVIEW_TEMPERATURE;
       ctx.store.settings.saveDelayMinSec ??= DEFAULT_SAVE_DELAY_MIN_SEC;
       ctx.store.settings.saveDelayMaxSec ??= DEFAULT_SAVE_DELAY_MAX_SEC;
       ctx.store.settings.prefetchCount ??= DEFAULT_PREFETCH_COUNT;
