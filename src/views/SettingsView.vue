@@ -20,7 +20,7 @@
         </div>
 
         <n-space align="center">
-          <n-button quaternary @click="handleReset">Сбросить</n-button>
+          <n-button quaternary @click="confirmReset">Сбросить</n-button>
           <n-tooltip>
             <template #trigger>
               <n-button type="primary" :loading="saving" @click="handleSave">
@@ -42,7 +42,14 @@
           :rules="rules"
           label-placement="top"
         >
-          <n-tabs v-model:value="activeTab" type="line" animated>
+          <!-- display-directive="show": скрытые вкладки остаются в форме,
+               иначе их обязательные поля выпадают из валидации -->
+          <n-tabs
+            v-model:value="activeTab"
+            type="line"
+            animated
+            display-directive="show"
+          >
           <n-tab-pane name="vk" tab="ВКонтакте">
             <n-form-item label="VK Token" path="vkToken">
               <n-space vertical style="width: 100%">
@@ -492,7 +499,7 @@ watch(
 );
 
 onKeyStroke(["s", "S", "ы", "Ы"], (e) => {
-  if (!e.ctrlKey && !e.metaKey) {
+  if ((!e.ctrlKey && !e.metaKey) || saving.value) {
     return;
   }
 
@@ -581,18 +588,31 @@ async function handleSave(): Promise<boolean> {
     return true;
   } catch (e) {
     console.error("[Settings] Не удалось сохранить настройки", e);
-    if (typeof e === "string") {
-      message.error(e);
-    } else {
-      // Ошибка валидации приходит массивом и относится к полям вкладки «ВКонтакте»
+
+    // Валидация naive-ui отклоняется массивом ошибок, всё остальное — сбой самого сохранения
+    if (Array.isArray(e)) {
       activeTab.value = "vk";
       message.error("Проверьте обязательные поля");
+    } else {
+      message.error(typeof e === "string" ? e : String(e));
     }
 
     return false;
   } finally {
     saving.value = false;
   }
+}
+
+// Кнопка стоит вплотную к «Сохранить», а стирает токен и промпты — спрашиваем
+function confirmReset(): void {
+  dialog.warning({
+    title: "Сбросить настройки?",
+    content:
+      "Токен, альбом и промпты вернутся к значениям по умолчанию. Сохранённые настройки останутся, пока вы не нажмёте «Сохранить».",
+    positiveText: "Сбросить",
+    negativeText: "Отмена",
+    onPositiveClick: handleReset,
+  });
 }
 
 function handleReset(): void {
