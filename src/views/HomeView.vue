@@ -6,6 +6,9 @@
           <n-tag size="small" :type="settings.processingMode === 'auto' ? 'success' : 'warning'">
             {{ settings.processingMode === 'auto' ? 'Авто' : 'Ручной' }}
           </n-tag>
+          <n-tag v-if="saveLimit > 0" :type="limitReached ? 'warning' : 'default'" size="small">
+            Лимит: {{ savedThisRun }} / {{ saveLimit }}
+          </n-tag>
           <n-tag :type="isProcessing ? 'info' : 'default'">
             {{ isProcessing ? stageLabel : 'Готов к работе' }}
           </n-tag>
@@ -215,7 +218,7 @@ const message = useMessage();
 const appStore = useAppStore();
 const {
   settings, photos, isProcessing, stats, progress, activePhoto, currentPhotoIndex,
-  lastProcessedPhoto, stage, waitSecondsLeft,
+  lastProcessedPhoto, stage, waitSecondsLeft, savedThisRun, limitReached, saveLimit,
 } = storeToRefs(appStore);
 
 const undoing = ref(false);
@@ -232,6 +235,7 @@ const stageLabels: Record<ProcessingStage, string> = {
   idle: 'Обработка...',
   generating: 'Генерация описания...',
   reviewing: 'Ревью описания...',
+  awaiting: 'Ждёт вашего решения',
   waiting: 'Пауза перед сохранением',
   saving: 'Сохранение в VK...',
 };
@@ -247,6 +251,15 @@ const statusLabels: Record<PhotoTask['status'], string> = {
 async function handleStart() {
   try {
     await appStore.startProcessing();
+
+    if (limitReached.value) {
+      message.warning(
+        `Достигнут лимит ${saveLimit.value} сохранений за запуск. Остальные фото ждут следующего захода.`,
+        { duration: 15000, closable: true },
+      );
+      return;
+    }
+
     message.success('Обработка завершена!');
   } catch (e) {
     console.error('[HomeView] Запуск обработки не удался', e);

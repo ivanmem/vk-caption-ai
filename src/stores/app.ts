@@ -49,6 +49,7 @@ export const DEFAULT_SAVE_DELAY_MIN_SEC = 3;
 export const DEFAULT_SAVE_DELAY_MAX_SEC = 30;
 export const DEFAULT_REVIEW_RETRIES = 2;
 export const DEFAULT_PREFETCH_COUNT = 1;
+export const DEFAULT_MAX_SAVES_PER_RUN = 100;
 
 export interface AppSettings {
   vkToken: string;
@@ -69,6 +70,7 @@ export interface AppSettings {
   saveDelayMinSec?: number;
   saveDelayMaxSec?: number;
   prefetchCount?: number;
+  maxSavesPerRun?: number;
 }
 
 // Вердикт автоматического ревью, приходит из Rust
@@ -77,7 +79,7 @@ export interface CaptionReview {
   comment: string;
 }
 
-export type ProcessingStage = 'idle' | 'generating' | 'reviewing' | 'waiting' | 'saving';
+export type ProcessingStage = 'idle' | 'generating' | 'reviewing' | 'awaiting' | 'waiting' | 'saving';
 
 export interface ManualReviewPayload {
   photo: PhotoTask;
@@ -105,6 +107,7 @@ export const useAppStore = defineStore('app', () => {
     saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
     saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
     prefetchCount: DEFAULT_PREFETCH_COUNT,
+    maxSavesPerRun: DEFAULT_MAX_SAVES_PER_RUN,
   });
 
   const photos = ref<PhotoTask[]>([]);
@@ -115,6 +118,13 @@ export const useAppStore = defineStore('app', () => {
   // Что приложение делает прямо сейчас — для индикатора на главной
   const stage = ref<ProcessingStage>('idle');
   const waitSecondsLeft = ref(0);
+
+  // Сколько описаний записано в VK за текущий запуск и упёрлись ли мы в лимит
+  const savedThisRun = ref(0);
+  const limitReached = ref(false);
+
+  const saveLimit = computed(() => settings.value.maxSavesPerRun ?? DEFAULT_MAX_SAVES_PER_RUN);
+  const savesLeft = computed(() => (saveLimit.value > 0 ? saveLimit.value - savedThisRun.value : Infinity));
 
   const prefetch = useCaptionPrefetch(produceCaption);
 
@@ -246,8 +256,11 @@ export const useAppStore = defineStore('app', () => {
   function randomSaveDelayMs(): number {
     const min = settings.value.saveDelayMinSec ?? DEFAULT_SAVE_DELAY_MIN_SEC;
     const max = settings.value.saveDelayMaxSec ?? DEFAULT_SAVE_DELAY_MAX_SEC;
+    const from = Math.max(0, Math.min(min, max));
+    const to = Math.max(0, Math.max(min, max));
 
-    return random(Math.min(min, max), Math.max(min, max)) * 1000;
+    // random из es-toolkit требует строго большей верхней границы
+    return (from === to ? from : random(from, to)) * 1000;
   }
 
   // Ждём по секунде, чтобы «Остановить» срабатывало сразу и был виден обратный отсчёт
@@ -271,7 +284,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function schedulePrefetch(fromIndex: number): void {
-    const count = settings.value.prefetchCount ?? DEFAULT_PREFETCH_COUNT;
+    // Готовим не больше, чем успеем сохранить до лимита
+    const count = Math.min(settings.value.prefetchCount ?? DEFAULT_PREFETCH_COUNT, savesLeft.value);
     if (count <= 0) {
       return;
     }
@@ -287,6 +301,8 @@ export const useAppStore = defineStore('app', () => {
     photos.value = [];
     currentPhotoIndex.value = 0;
     lastProcessedPhoto.value = null;
+    savedThisRun.value = 0;
+    limitReached.value = false;
     prefetch.clear();
 
     try {
@@ -298,6 +314,13 @@ export const useAppStore = defineStore('app', () => {
 
       for (let i = 0; i < photos.value.length; i++) {
         if (!isProcessing.value) {
+          break;
+        }
+
+        // Лимит проверяем до генерации, чтобы не гонять модель впустую
+        if (savesLeft.value <= 0) {
+          limitReached.value = true;
+          console.warn(`[AppStore] Достигнут лимит ${saveLimit.value} сохранений за запуск, останавливаемся`);
           break;
         }
 
@@ -354,6 +377,7 @@ export const useAppStore = defineStore('app', () => {
             schedulePrefetch(i + 1);
 
             while (true) {
+              setStage('awaiting');
               console.log('[ManualReview] Requesting review for photo:', photo.id);
               const { action, comment, editedCaption } = await requestManualReview(photo, currentCaption);
               console.log('[ManualReview] Action received:', action);
@@ -361,6 +385,7 @@ export const useAppStore = defineStore('app', () => {
 
               if (action === 'regenerate') {
                 console.log('[AppStore] Starting manual regeneration...');
+                setStage('generating');
                 isRegenerating.value = true;
                 photo.status = 'processing';
                 photo.error = undefined;
@@ -428,7 +453,9 @@ export const useAppStore = defineStore('app', () => {
           photo.caption = caption;
           photo.status = 'completed';
           photo.error = undefined;
+          photo.reviewComment = '';
           stats.value.processed++;
+          savedThisRun.value++;
           lastProcessedPhoto.value = { ...photo };
           console.log('[ManualReview] Photo completed:', photo.id);
 
@@ -491,6 +518,8 @@ export const useAppStore = defineStore('app', () => {
     manualReview.value = null;
     stage.value = 'idle';
     waitSecondsLeft.value = 0;
+    savedThisRun.value = 0;
+    limitReached.value = false;
     prefetch.clear();
   }
 
@@ -539,6 +568,7 @@ export const useAppStore = defineStore('app', () => {
 
         photo.caption = finalCaption;
         photo.status = 'completed';
+        photo.reviewComment = '';
 
         // Обновляем последнее обработанное фото, если это оно
         if (lastProcessedPhoto.value && lastProcessedPhoto.value.id === photo.id) {
@@ -567,6 +597,9 @@ export const useAppStore = defineStore('app', () => {
     isRegenerating,
     stage,
     waitSecondsLeft,
+    savedThisRun,
+    limitReached,
+    saveLimit,
     saveSettings,
     startProcessing,
     stopProcessing,
@@ -592,6 +625,7 @@ export const useAppStore = defineStore('app', () => {
       ctx.store.settings.saveDelayMinSec ??= DEFAULT_SAVE_DELAY_MIN_SEC;
       ctx.store.settings.saveDelayMaxSec ??= DEFAULT_SAVE_DELAY_MAX_SEC;
       ctx.store.settings.prefetchCount ??= DEFAULT_PREFETCH_COUNT;
+      ctx.store.settings.maxSavesPerRun ??= DEFAULT_MAX_SAVES_PER_RUN;
     },
   },
 });

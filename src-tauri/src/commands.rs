@@ -81,6 +81,9 @@ pub struct PhotoTask {
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub client: Client,
+    /// Последняя скачанная картинка (url, data-url): одно и то же фото уходит в модель
+    /// несколько раз — генерация, ревью, перегенерация
+    pub last_image: Mutex<Option<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +110,7 @@ impl Default for AppState {
         Self {
             settings: Mutex::new(AppSettings::default()),
             client,
+            last_image: Mutex::new(None),
         }
     }
 }
@@ -296,7 +300,7 @@ pub struct CaptionReview {
 pub async fn generate_caption(state: State<'_, AppState>, image_url: String, system_prompt: String, user_comment: Option<String>) -> Result<String, String> {
     let cfg = LmConfig::load(&state)?;
     let client = state.client.clone();
-    let image_content_url = fetch_image_data_url(&client, &image_url, &cfg.image_mode).await?;
+    let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 
     const SYSTEM_RETRY: &str = "Ответ должен быть строго JSON-массивом строк. Ничего кроме этого. Пример: [\"тег1\", \"тег2\"]";
 
@@ -349,7 +353,7 @@ pub async fn review_caption(
 ) -> Result<CaptionReview, String> {
     let cfg = LmConfig::load(&state)?;
     let client = state.client.clone();
-    let image_content_url = fetch_image_data_url(&client, &image_url, &cfg.image_mode).await?;
+    let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 
     let mut user_text = format!(
         "Правила, по которым составлялось описание:\n{}\n\nПредложенное описание:\n{}\n\nВерни ТОЛЬКО JSON-объект: {{\"ok\": true}} или {{\"ok\": false, \"comment\": \"что именно исправить\"}}.",
@@ -413,15 +417,30 @@ pub async fn list_lmstudio_models(state: State<'_, AppState>) -> Result<Vec<Stri
 }
 
 /// Скачивает картинку и кодирует её в data-URL. В режиме "path" модель получает только ссылку.
-async fn fetch_image_data_url(client: &Client, image_url: &str, image_mode: &str) -> Result<String, String> {
+/// Последний результат держим в памяти: ревью и перегенерация просят то же самое фото.
+async fn fetch_image_data_url(state: &State<'_, AppState>, image_url: &str, image_mode: &str) -> Result<String, String> {
     if image_mode == "path" {
         return Ok(String::new());
     }
 
-    let bytes = client.get(image_url).send().await.map_err(|e| e.to_string())?
-        .bytes().await.map_err(|e| e.to_string())?;
+    {
+        let cached = state.last_image.lock().map_err(|e| e.to_string())?;
+        if let Some((url, data)) = cached.as_ref() {
+            if url == image_url {
+                println!("[lm] картинка взята из кэша: {}", image_url);
+                return Ok(data.clone());
+            }
+        }
+    }
 
-    Ok(format!("data:image/jpeg;base64,{}", general_purpose::STANDARD.encode(&bytes)))
+    let bytes = state.client.get(image_url).send().await.map_err(|e| e.to_string())?
+        .bytes().await.map_err(|e| e.to_string())?;
+    let data_url = format!("data:image/jpeg;base64,{}", general_purpose::STANDARD.encode(&bytes));
+
+    let mut cached = state.last_image.lock().map_err(|e| e.to_string())?;
+    *cached = Some((image_url.to_string(), data_url.clone()));
+
+    Ok(data_url)
 }
 
 /// Один запрос к LM Studio. Пустой image_data_url означает запрос без картинки.
@@ -488,12 +507,21 @@ fn parse_review(raw: &str) -> CaptionReview {
     CaptionReview { ok, comment }
 }
 
-/// Вытаскивает JSON-объект из ответа модели, даже если вокруг него есть рассуждения или Markdown.
+/// Вытаскивает вердикт из ответа модели, даже если вокруг него есть рассуждения или Markdown.
+/// Модели с thinking ставят фигурные скобки и до самого вердикта, поэтому пробуем разобрать
+/// объект от каждой открывающей скобки и берём первый, похожий на вердикт.
 fn extract_json_object(raw: &str) -> Option<serde_json::Value> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
+    for (start, _) in raw.match_indices('{') {
+        let mut objects = serde_json::Deserializer::from_str(&raw[start..]).into_iter::<serde_json::Value>();
 
-    serde_json::from_str(raw.get(start..=end)?).ok()
+        if let Some(Ok(value)) = objects.next() {
+            if value.get("ok").is_some() || value.get("comment").is_some() {
+                return Some(value);
+            }
+        }
+    }
+
+    None
 }
 
 /// Достаёт код и текст ошибки из ответа VK.

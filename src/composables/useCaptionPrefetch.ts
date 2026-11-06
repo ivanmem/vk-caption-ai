@@ -33,8 +33,9 @@ export function useCaptionPrefetch(produce: (photo: PhotoTask) => Promise<string
     return task;
   }
 
+  // Цепочку не трогаем: уже запущенный запрос продолжает выполняться, и новые задачи
+  // должны встать за ним, иначе LM Studio получит два запроса разом
   function clear(): void {
     cache.clear();
-    queue = Promise.resolve();
   }
 }

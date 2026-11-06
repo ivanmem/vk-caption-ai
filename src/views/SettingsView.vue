@@ -165,6 +165,22 @@
             </template>
           </n-form-item>
 
+          <n-form-item label="Лимит сохранений за запуск">
+            <n-input-number
+              v-model:value="appStore.settings.maxSavesPerRun"
+              :min="0"
+              :max="10000"
+              size="small"
+              style="width: 140px"
+            />
+            <template #feedback>
+              Сколько описаний разрешено записать в VK за один запуск. VK смотрит
+              не только на частоту правок, но и на их количество за день, поэтому
+              большой альбом лучше проходить за несколько заходов. 0 — без
+              лимита.
+            </template>
+          </n-form-item>
+
           <n-form-item label="Предгенерация в ручном режиме">
             <n-input-number
               v-model:value="appStore.settings.prefetchCount"
@@ -337,6 +353,7 @@ import {
   DEFAULT_SAVE_DELAY_MIN_SEC,
   DEFAULT_SAVE_DELAY_MAX_SEC,
   DEFAULT_PREFETCH_COUNT,
+  DEFAULT_MAX_SAVES_PER_RUN,
 } from "@/stores/app";
 import { useLmstudioModels } from "@/composables/useLmstudioModels";
 
@@ -503,6 +520,7 @@ function handleReset(): void {
     saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
     saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
     prefetchCount: DEFAULT_PREFETCH_COUNT,
+    maxSavesPerRun: DEFAULT_MAX_SAVES_PER_RUN,
   };
   systemPromptDraft.value = DEFAULT_SYSTEM_PROMPT;
   reviewPromptDraft.value = DEFAULT_REVIEW_PROMPT;
@@ -532,6 +550,7 @@ function snapshotOf(
     settings.saveDelayMinSec ?? DEFAULT_SAVE_DELAY_MIN_SEC,
     settings.saveDelayMaxSec ?? DEFAULT_SAVE_DELAY_MAX_SEC,
     settings.prefetchCount ?? DEFAULT_PREFETCH_COUNT,
+    settings.maxSavesPerRun ?? DEFAULT_MAX_SAVES_PER_RUN,
     prompt.trim() || DEFAULT_SYSTEM_PROMPT,
     reviewPrompt.trim() || DEFAULT_REVIEW_PROMPT,
   ]);
