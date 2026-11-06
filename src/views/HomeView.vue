@@ -7,7 +7,7 @@
             {{ settings.processingMode === 'auto' ? 'Авто' : 'Ручной' }}
           </n-tag>
           <n-tag :type="isProcessing ? 'info' : 'default'">
-            {{ isProcessing ? 'Обработка...' : 'Готов к работе' }}
+            {{ isProcessing ? stageLabel : 'Готов к работе' }}
           </n-tag>
         </n-space>
       </template>
@@ -145,6 +145,9 @@
             </n-space>
             <n-text v-if="activePhoto.caption" type="success">{{ activePhoto.caption }}</n-text>
             <n-text v-if="activePhoto.error" type="error">{{ activePhoto.error }}</n-text>
+            <n-text v-if="activePhoto.reviewComment" depth="3" style="font-size: 13px">
+              Замечание ревью: {{ activePhoto.reviewComment }}
+            </n-text>
           </n-space>
         </div>
 
@@ -188,7 +191,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useMessage } from 'naive-ui';
 import {
   NCard, NTag, NGrid, NGi, NStatistic, NIcon, NText, NProgress,
@@ -204,15 +207,34 @@ import {
   LinkOutline as LinkIcon,
   PlaySkipForwardOutline as SkipIcon,
 } from '@vicons/ionicons5';
-import { useAppStore, type PhotoTask } from '@/stores/app';
+import { useAppStore, type PhotoTask, type ProcessingStage } from '@/stores/app';
 import { storeToRefs } from 'pinia';
 import ManualReviewModal from '@/components/ManualReviewModal.vue';
 
 const message = useMessage();
 const appStore = useAppStore();
-const { settings, photos, isProcessing, stats, progress, activePhoto, currentPhotoIndex, lastProcessedPhoto } = storeToRefs(appStore);
+const {
+  settings, photos, isProcessing, stats, progress, activePhoto, currentPhotoIndex,
+  lastProcessedPhoto, stage, waitSecondsLeft,
+} = storeToRefs(appStore);
 
 const undoing = ref(false);
+
+const stageLabel = computed(() => {
+  if (stage.value === 'waiting') {
+    return `Пауза перед сохранением: ${waitSecondsLeft.value} с`;
+  }
+
+  return stageLabels[stage.value];
+});
+
+const stageLabels: Record<ProcessingStage, string> = {
+  idle: 'Обработка...',
+  generating: 'Генерация описания...',
+  reviewing: 'Ревью описания...',
+  waiting: 'Пауза перед сохранением',
+  saving: 'Сохранение в VK...',
+};
 
 const statusLabels: Record<PhotoTask['status'], string> = {
   pending: 'Ожидание',

@@ -137,6 +137,85 @@
             </template>
           </n-form-item>
 
+          <n-form-item label="Пауза перед сохранением в VK">
+            <n-space align="center">
+              <span>от</span>
+              <n-input-number
+                v-model:value="appStore.settings.saveDelayMinSec"
+                :min="0"
+                :max="600"
+                size="small"
+                style="width: 110px"
+              />
+              <span>до</span>
+              <n-input-number
+                v-model:value="appStore.settings.saveDelayMaxSec"
+                :min="0"
+                :max="600"
+                size="small"
+                style="width: 110px"
+              />
+              <span>секунд</span>
+            </n-space>
+            <template #feedback>
+              Случайная задержка перед каждой записью описания в VK, сверх
+              времени генерации. Нужна, чтобы VK не принял поток правок за
+              взлом. Ревью и ваши раздумья в ручном режиме идут в счёт этой
+              паузы.
+            </template>
+          </n-form-item>
+
+          <n-form-item label="Предгенерация в ручном режиме">
+            <n-input-number
+              v-model:value="appStore.settings.prefetchCount"
+              :min="0"
+              :max="10"
+              size="small"
+              style="width: 110px"
+            />
+            <template #feedback>
+              Сколько следующих описаний готовить в фоне, пока вы смотрите
+              текущее. Ничего не сохраняется, только подготавливается. 0 —
+              выключено.
+            </template>
+          </n-form-item>
+
+          <n-form-item label="Авто-ревью описаний">
+            <n-space vertical style="width: 100%">
+              <n-checkbox v-model:checked="appStore.settings.autoReviewEnabled">
+                Проверять готовое описание второй моделью и перегенерировать с
+                замечанием
+              </n-checkbox>
+              <n-space v-if="appStore.settings.autoReviewEnabled" align="center">
+                <span>Попыток перегенерации:</span>
+                <n-input-number
+                  v-model:value="appStore.settings.reviewMaxRetries"
+                  :min="1"
+                  :max="5"
+                  size="small"
+                  style="width: 110px"
+                />
+              </n-space>
+            </n-space>
+          </n-form-item>
+
+          <n-form-item
+            v-if="appStore.settings.autoReviewEnabled"
+            label="Промпт ревью"
+            path="reviewPrompt"
+          >
+            <n-input
+              v-model:value="reviewPromptDraft"
+              type="textarea"
+              :autosize="{ minRows: 4, maxRows: 12 }"
+              placeholder="Оставьте пустым для сброса к стандартному промпту ревью"
+            />
+            <template #feedback>
+              Ревьюер видит картинку, правила из системного промпта и готовое
+              описание. Отвечать он должен JSON-объектом с полями ok и comment.
+            </template>
+          </n-form-item>
+
           <n-form-item label="Загрузка фото">
             <n-space vertical>
               <n-checkbox
@@ -250,7 +329,15 @@ import {
 } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppSettings } from "@/stores/app";
-import { useAppStore, DEFAULT_SYSTEM_PROMPT } from "@/stores/app";
+import {
+  useAppStore,
+  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_REVIEW_PROMPT,
+  DEFAULT_REVIEW_RETRIES,
+  DEFAULT_SAVE_DELAY_MIN_SEC,
+  DEFAULT_SAVE_DELAY_MAX_SEC,
+  DEFAULT_PREFETCH_COUNT,
+} from "@/stores/app";
 import { useLmstudioModels } from "@/composables/useLmstudioModels";
 
 const message = useMessage();
@@ -264,19 +351,27 @@ const albumOptions = ref<
   Array<{ label: string; value: string; thumb?: string; size?: number }>
 >([]);
 
-// Локальное поле для редактирования — не трогает store напрямую
+// Локальные поля для редактирования — не трогают store напрямую
 const systemPromptDraft = ref(
   appStore.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+);
+const reviewPromptDraft = ref(
+  appStore.settings.reviewPrompt || DEFAULT_REVIEW_PROMPT,
 );
 
 // Снимок того, что реально отправлено в Rust: с ним сравниваем поля формы
 const savedSettings = ref<AppSettings>({ ...appStore.settings });
 const savedPrompt = ref(systemPromptDraft.value);
+const savedReviewPrompt = ref(reviewPromptDraft.value);
 
 const isDirty = computed(
   () =>
-    snapshotOf(appStore.settings, systemPromptDraft.value) !==
-    snapshotOf(savedSettings.value, savedPrompt.value),
+    snapshotOf(
+      appStore.settings,
+      systemPromptDraft.value,
+      reviewPromptDraft.value,
+    ) !==
+    snapshotOf(savedSettings.value, savedPrompt.value, savedReviewPrompt.value),
 );
 
 const rules: FormRules = {
@@ -345,6 +440,10 @@ async function handleSave(): Promise<boolean> {
       systemPromptDraft.value.trim() || DEFAULT_SYSTEM_PROMPT;
     const systemPromptToStore =
       systemPrompt === DEFAULT_SYSTEM_PROMPT ? "" : systemPrompt;
+    const reviewPrompt =
+      reviewPromptDraft.value.trim() || DEFAULT_REVIEW_PROMPT;
+    const reviewPromptToStore =
+      reviewPrompt === DEFAULT_REVIEW_PROMPT ? "" : reviewPrompt;
     await invoke("save_settings", {
       settings: {
         vk_token: s.vkToken,
@@ -359,10 +458,16 @@ async function handleSave(): Promise<boolean> {
         lmstudio_integrations: s.lmstudioIntegrations ?? "",
       },
     });
-    appStore.saveSettings({ ...s, systemPrompt: systemPromptToStore });
+    appStore.saveSettings({
+      ...s,
+      systemPrompt: systemPromptToStore,
+      reviewPrompt: reviewPromptToStore,
+    });
     systemPromptDraft.value = systemPrompt;
+    reviewPromptDraft.value = reviewPrompt;
     savedSettings.value = { ...appStore.settings };
     savedPrompt.value = systemPrompt;
+    savedReviewPrompt.value = reviewPrompt;
     message.success("Настройки сохранены");
 
     return true;
@@ -392,13 +497,24 @@ function handleReset(): void {
     revOrder: true,
     temperature: 1.1,
     lmstudioIntegrations: "",
+    autoReviewEnabled: false,
+    reviewPrompt: "",
+    reviewMaxRetries: DEFAULT_REVIEW_RETRIES,
+    saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
+    saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
+    prefetchCount: DEFAULT_PREFETCH_COUNT,
   };
   systemPromptDraft.value = DEFAULT_SYSTEM_PROMPT;
+  reviewPromptDraft.value = DEFAULT_REVIEW_PROMPT;
 }
 
 // Строковый слепок формы с фиксированным порядком полей — сравнивать объекты напрямую нельзя,
 // потому что handleReset пересоздаёт настройки с другим порядком ключей
-function snapshotOf(settings: AppSettings, prompt: string): string {
+function snapshotOf(
+  settings: AppSettings,
+  prompt: string,
+  reviewPrompt: string,
+): string {
   return JSON.stringify([
     settings.vkToken,
     settings.vkAlbumId,
@@ -411,7 +527,13 @@ function snapshotOf(settings: AppSettings, prompt: string): string {
     !!settings.processPhotosWithCaption,
     settings.revOrder !== false,
     settings.temperature ?? 1.1,
+    !!settings.autoReviewEnabled,
+    settings.reviewMaxRetries ?? DEFAULT_REVIEW_RETRIES,
+    settings.saveDelayMinSec ?? DEFAULT_SAVE_DELAY_MIN_SEC,
+    settings.saveDelayMaxSec ?? DEFAULT_SAVE_DELAY_MAX_SEC,
+    settings.prefetchCount ?? DEFAULT_PREFETCH_COUNT,
     prompt.trim() || DEFAULT_SYSTEM_PROMPT,
+    reviewPrompt.trim() || DEFAULT_REVIEW_PROMPT,
   ]);
 }
 
@@ -419,6 +541,7 @@ function snapshotOf(settings: AppSettings, prompt: string): string {
 function discardChanges(): void {
   appStore.settings = { ...savedSettings.value };
   systemPromptDraft.value = savedPrompt.value;
+  reviewPromptDraft.value = savedReviewPrompt.value;
 }
 
 function confirmLeave(): Promise<boolean> {

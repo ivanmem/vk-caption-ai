@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { delay, random } from 'es-toolkit';
+import { useCaptionPrefetch } from '@/composables/useCaptionPrefetch';
 
 export interface PhotoTask {
   id: number;
@@ -11,6 +13,8 @@ export interface PhotoTask {
   status: 'pending' | 'processing' | 'completed' | 'error' | 'skipped';
   error?: string;
   previousCaption?: string;
+  // Последнее замечание авто-ревью по этому фото
+  reviewComment?: string;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = `Вытащи текст со стикера (если есть) и 1-3 слова-тега (эмоция, реакция, смысл).
@@ -29,6 +33,23 @@ export const DEFAULT_SYSTEM_PROMPT = `Вытащи текст со стикер�
 Пример (с текстом на картинке):
 ["Ухади", "злость", "прогоняет", "😡"]`;
 
+export const DEFAULT_REVIEW_PROMPT = `Ты — строгий редактор описаний к картинкам.
+Тебе дают картинку, правила составления описания и предложенный вариант.
+Проверь, что описание соответствует самой картинке и всем правилам.
+
+Верни ТОЛЬКО JSON-объект, без Markdown и пояснений:
+{"ok": true} — если описание годится;
+{"ok": false, "comment": "что именно не так и что исправить"} — если нет.
+
+Комментарий пиши на русском, коротко и по делу, как указание автору описания.
+Не придирайся по мелочам: отклоняй только явные ошибки — описание не про эту картинку,
+нарушены правила, есть лишний текст, Markdown или неверный формат.`;
+
+export const DEFAULT_SAVE_DELAY_MIN_SEC = 3;
+export const DEFAULT_SAVE_DELAY_MAX_SEC = 30;
+export const DEFAULT_REVIEW_RETRIES = 2;
+export const DEFAULT_PREFETCH_COUNT = 1;
+
 export interface AppSettings {
   vkToken: string;
   vkAlbumId: string;
@@ -42,7 +63,21 @@ export interface AppSettings {
   temperature?: number;
   imageTransmissionMode?: 'direct' | 'path' | 'mixed';
   lmstudioIntegrations?: string;
+  autoReviewEnabled?: boolean;
+  reviewPrompt?: string;
+  reviewMaxRetries?: number;
+  saveDelayMinSec?: number;
+  saveDelayMaxSec?: number;
+  prefetchCount?: number;
 }
+
+// Вердикт автоматического ревью, приходит из Rust
+export interface CaptionReview {
+  ok: boolean;
+  comment: string;
+}
+
+export type ProcessingStage = 'idle' | 'generating' | 'reviewing' | 'waiting' | 'saving';
 
 export interface ManualReviewPayload {
   photo: PhotoTask;
@@ -64,12 +99,24 @@ export const useAppStore = defineStore('app', () => {
     temperature: 1.1,
     imageTransmissionMode: 'direct',
     lmstudioIntegrations: '',
+    autoReviewEnabled: false,
+    reviewPrompt: '',
+    reviewMaxRetries: DEFAULT_REVIEW_RETRIES,
+    saveDelayMinSec: DEFAULT_SAVE_DELAY_MIN_SEC,
+    saveDelayMaxSec: DEFAULT_SAVE_DELAY_MAX_SEC,
+    prefetchCount: DEFAULT_PREFETCH_COUNT,
   });
 
   const photos = ref<PhotoTask[]>([]);
   const isProcessing = ref(false);
   const currentPhotoIndex = ref(0);
   const stats = ref({ total: 0, processed: 0, failed: 0, skipped: 0 });
+
+  // Что приложение делает прямо сейчас — для индикатора на главной
+  const stage = ref<ProcessingStage>('idle');
+  const waitSecondsLeft = ref(0);
+
+  const prefetch = useCaptionPrefetch(produceCaption);
 
   // Последнее обработанное фото (для автоматического режима)
   const lastProcessedPhoto = ref<PhotoTask | null>(null);
@@ -138,12 +185,109 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  // Полный цикл подготовки описания: генерация и, если включено, авто-ревью с перегенерацией
+  async function produceCaption(photo: PhotoTask, onStage?: (value: ProcessingStage) => void): Promise<string> {
+    onStage?.('generating');
+    const caption = await processPhoto(photo);
+
+    if (!caption || !settings.value.autoReviewEnabled) {
+      return caption;
+    }
+
+    return await reviewAndFix(photo, caption, onStage);
+  }
+
+  // Ревью «нажимает перегенерировать» за пользователя и передаёт модели своё замечание
+  async function reviewAndFix(photo: PhotoTask, caption: string, onStage?: (value: ProcessingStage) => void): Promise<string> {
+    const systemPrompt = settings.value.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const reviewPrompt = settings.value.reviewPrompt || DEFAULT_REVIEW_PROMPT;
+    const maxRetries = settings.value.reviewMaxRetries ?? DEFAULT_REVIEW_RETRIES;
+    let current = caption;
+
+    for (let attempt = 1; attempt <= maxRetries && isProcessing.value; attempt++) {
+      onStage?.('reviewing');
+
+      let verdict: CaptionReview;
+      try {
+        verdict = await invoke<CaptionReview>('review_caption', {
+          imageUrl: photo.image_url,
+          caption: current,
+          systemPrompt,
+          reviewPrompt,
+        });
+      } catch (err) {
+        console.error(`[Review] Ревью не удалось для фото ${photo.id}, оставляем описание как есть`, err);
+        break;
+      }
+
+      console.log(`[Review] Фото ${photo.id}, попытка ${attempt}/${maxRetries}: ok=${verdict.ok}`, verdict.comment);
+      photo.reviewComment = verdict.ok ? '' : verdict.comment;
+
+      if (verdict.ok) {
+        break;
+      }
+
+      onStage?.('generating');
+      try {
+        current = await processPhoto(photo, verdict.comment);
+      } catch (err) {
+        console.error(`[Review] Перегенерация по замечанию не удалась для фото ${photo.id}`, err);
+        break;
+      }
+
+      if (attempt === maxRetries) {
+        console.warn(`[Review] Попытки закончились, сохраняем последний вариант для фото ${photo.id}`);
+      }
+    }
+
+    return current;
+  }
+
+  function randomSaveDelayMs(): number {
+    const min = settings.value.saveDelayMinSec ?? DEFAULT_SAVE_DELAY_MIN_SEC;
+    const max = settings.value.saveDelayMaxSec ?? DEFAULT_SAVE_DELAY_MAX_SEC;
+
+    return random(Math.min(min, max), Math.max(min, max)) * 1000;
+  }
+
+  // Ждём по секунде, чтобы «Остановить» срабатывало сразу и был виден обратный отсчёт
+  async function waitUntil(deadline: number): Promise<void> {
+    while (isProcessing.value) {
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        break;
+      }
+
+      stage.value = 'waiting';
+      waitSecondsLeft.value = Math.ceil(left / 1000);
+      await delay(Math.min(left, 1000));
+    }
+
+    waitSecondsLeft.value = 0;
+  }
+
+  function setStage(value: ProcessingStage): void {
+    stage.value = value;
+  }
+
+  function schedulePrefetch(fromIndex: number): void {
+    const count = settings.value.prefetchCount ?? DEFAULT_PREFETCH_COUNT;
+    if (count <= 0) {
+      return;
+    }
+
+    prefetch.schedule(
+      photos.value.slice(fromIndex, fromIndex + count).filter(next => !next.caption?.trim()),
+    );
+  }
+
   async function startProcessing(): Promise<void> {
     isProcessing.value = true;
     stats.value = { total: 0, processed: 0, failed: 0, skipped: 0 };
     photos.value = [];
     currentPhotoIndex.value = 0;
     lastProcessedPhoto.value = null;
+    prefetch.clear();
 
     try {
       console.log('[AppStore] Loading photos from VK...');
@@ -174,7 +318,13 @@ export const useAppStore = defineStore('app', () => {
             console.log(`[AppStore] Using existing caption for photo ${photo.id}`);
           } else {
             try {
-              caption = await processPhoto(photo);
+              const prepared = prefetch.take(photo);
+              if (prepared) {
+                console.log(`[Prefetch] Берём заранее подготовленное описание для фото ${photo.id}`);
+                stage.value = 'generating';
+              }
+
+              caption = await (prepared ?? produceCaption(photo, setStage));
             } catch (err) {
               generationError = err instanceof Error ? err.message : String(err);
               console.warn(`[AppStore] Initial generate error for ${photo.id}`, generationError);
@@ -184,6 +334,9 @@ export const useAppStore = defineStore('app', () => {
           if (!caption && !generationError) {
             generationError = 'Пустая подпись';
           }
+
+          // Пауза перед записью в VK отсчитывается отсюда: ревью и раздумья пользователя её съедают
+          const saveNotBefore = Date.now() + randomSaveDelayMs();
 
           if (isManualReviewRequired) {
             // Ручной режим ИЛИ у фото уже есть описание: ждём решения пользователя
@@ -196,6 +349,9 @@ export const useAppStore = defineStore('app', () => {
 
             let finalAction: 'save' | 'skip' | 'regenerate' | 'cancel' | undefined = undefined;
             let currentCaption = caption;
+
+            // Пока пользователь думает, видеокарта готовит описания для следующих фото
+            schedulePrefetch(i + 1);
 
             while (true) {
               console.log('[ManualReview] Requesting review for photo:', photo.id);
@@ -251,7 +407,16 @@ export const useAppStore = defineStore('app', () => {
             continue;
           }
 
+          // Держим случайную паузу: подряд идущие правки VK считает флудом. Время ревью
+          // и раздумий пользователя уже прошло, поэтому ждём только остаток
+          await waitUntil(saveNotBefore);
+
+          if (!isProcessing.value) {
+            break;
+          }
+
           // Сохраняем в VK
+          stage.value = 'saving';
           console.log('[ManualReview] Saving caption for photo:', photo.id);
           await invoke('save_photo_caption', {
             photoId: photo.id,
@@ -278,6 +443,9 @@ export const useAppStore = defineStore('app', () => {
       throw error;
     } finally {
       isProcessing.value = false;
+      stage.value = 'idle';
+      waitSecondsLeft.value = 0;
+      prefetch.clear();
     }
   }
 
@@ -311,6 +479,7 @@ export const useAppStore = defineStore('app', () => {
 
   function stopProcessing(): void {
     isProcessing.value = false;
+    prefetch.clear();
   }
 
   function reset(): void {
@@ -320,6 +489,9 @@ export const useAppStore = defineStore('app', () => {
     stats.value = { total: 0, processed: 0, failed: 0, skipped: 0 };
     lastProcessedPhoto.value = null;
     manualReview.value = null;
+    stage.value = 'idle';
+    waitSecondsLeft.value = 0;
+    prefetch.clear();
   }
 
   async function manualEditPhoto(photo: PhotoTask): Promise<void> {
@@ -393,6 +565,8 @@ export const useAppStore = defineStore('app', () => {
     lastProcessedPhoto,
     manualReview,
     isRegenerating,
+    stage,
+    waitSecondsLeft,
     saveSettings,
     startProcessing,
     stopProcessing,
@@ -411,6 +585,13 @@ export const useAppStore = defineStore('app', () => {
       if (typeof ctx.store.settings.temperature === 'undefined') {
         ctx.store.settings.temperature = 1.1;
       }
+
+      ctx.store.settings.autoReviewEnabled ??= false;
+      ctx.store.settings.reviewPrompt ??= '';
+      ctx.store.settings.reviewMaxRetries ??= DEFAULT_REVIEW_RETRIES;
+      ctx.store.settings.saveDelayMinSec ??= DEFAULT_SAVE_DELAY_MIN_SEC;
+      ctx.store.settings.saveDelayMaxSec ??= DEFAULT_SAVE_DELAY_MAX_SEC;
+      ctx.store.settings.prefetchCount ??= DEFAULT_PREFETCH_COUNT;
     },
   },
 });

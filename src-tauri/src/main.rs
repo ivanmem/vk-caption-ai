@@ -32,6 +32,7 @@ fn main() {
             commands::save_settings,
             commands::load_photos_without_caption,
             commands::generate_caption,
+            commands::review_caption,
             commands::save_photo_caption,
             commands::list_lmstudio_models,
             organizer::organizer_list_images,

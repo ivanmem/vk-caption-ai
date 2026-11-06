@@ -28,6 +28,15 @@
         {{ review?.photo.error }}
       </n-alert>
 
+      <n-alert
+        v-if="review?.photo.reviewComment"
+        type="warning"
+        title="Замечание авто-ревью"
+        :bordered="false"
+      >
+        {{ review?.photo.reviewComment }}
+      </n-alert>
+
       <div>
         <n-text depth="3" style="font-size: 12px">Сгенерированное описание:</n-text>
         <n-input

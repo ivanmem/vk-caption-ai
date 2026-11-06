@@ -264,21 +264,39 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
     Ok(photos)
 }
 
+/// Настройки обращения к LM Studio, общие для генерации и ревью описаний.
+struct LmConfig {
+    model: String,
+    temperature: f32,
+    image_mode: String,
+    token: String,
+    integrations: String,
+}
+
+impl LmConfig {
+    fn load(state: &State<'_, AppState>) -> Result<Self, String> {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        Ok(Self {
+            model: s.lmstudio_model.clone(),
+            temperature: s.temperature,
+            image_mode: s.image_transmission_mode.clone(),
+            token: s.lmstudio_token.clone(),
+            integrations: s.lmstudio_integrations.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptionReview {
+    pub ok: bool,
+    pub comment: String,
+}
+
 #[tauri::command]
 pub async fn generate_caption(state: State<'_, AppState>, image_url: String, system_prompt: String, user_comment: Option<String>) -> Result<String, String> {
-    let (model, temperature, image_mode, lm_token, lm_integrations) = {
-        let s = state.settings.lock().map_err(|e| e.to_string())?;
-        (s.lmstudio_model.clone(), s.temperature, s.image_transmission_mode.clone(), s.lmstudio_token.clone(), s.lmstudio_integrations.clone())
-    };
+    let cfg = LmConfig::load(&state)?;
     let client = state.client.clone();
-    
-    let image_content_url = if image_mode == "path" {
-        String::new()
-    } else {
-        let bytes = client.get(&image_url).send().await.map_err(|e| e.to_string())?.bytes().await.map_err(|e| e.to_string())?;
-        let b64 = general_purpose::STANDARD.encode(&bytes);
-        format!("data:image/jpeg;base64,{}", b64)
-    };
+    let image_content_url = fetch_image_data_url(&client, &image_url, &cfg.image_mode).await?;
 
     const SYSTEM_RETRY: &str = "Ответ должен быть строго JSON-массивом строк. Ничего кроме этого. Пример: [\"тег1\", \"тег2\"]";
 
@@ -302,52 +320,11 @@ pub async fn generate_caption(state: State<'_, AppState>, image_url: String, sys
             base_user_text.clone()
         };
 
-        if image_mode == "mixed" || image_mode == "path" {
+        if cfg.image_mode == "mixed" || cfg.image_mode == "path" {
             user_text = format!("{}\n\nURL\\Path images: {}", user_text, image_url);
         }
 
-        let mut content_array = vec![serde_json::json!({"type": "text", "content": user_text})];
-        if image_mode != "path" {
-            content_array.push(serde_json::json!({"type": "image", "data_url": image_content_url}));
-        }
-
-        let mut body = serde_json::json!({
-            "model": model,
-            "system_prompt": system_msg,
-            "input": content_array,
-            "temperature": temperature,
-        });
-
-        if !lm_integrations.trim().is_empty() {
-            match serde_json::from_str::<serde_json::Value>(&lm_integrations) {
-                Ok(parsed) => {
-                    if parsed.is_array() {
-                        body["integrations"] = parsed;
-                    } else {
-                        return Err(format!("Поле Интеграции должно быть JSON массивом: {}", lm_integrations));
-                    }
-                }
-                Err(e) => {
-                    return Err(format!("Ошибка парсинга JSON в поле Интеграции: {}\nПроверьте, что все ключи в двойных кавычках!", e));
-                }
-            }
-        }
-
-        let mut req = client.post("http://localhost:1234/api/v1/chat")
-            .json(&body);
-        if !lm_token.is_empty() {
-            req = req.bearer_auth(&lm_token);
-        }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
-        let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-        let mut raw = String::new();
-        if let Some(arr) = json["output"].as_array() {
-            for item in arr {
-                if let Some(c) = item["content"].as_str() {
-                    raw.push_str(c);
-                }
-            }
-        }
+        let raw = lm_chat(&client, &cfg, &system_msg, &user_text, &image_content_url).await?;
         let caption = parse_caption(&raw);
 
     if !caption.is_empty() && caption.contains('"') {
@@ -358,6 +335,38 @@ pub async fn generate_caption(state: State<'_, AppState>, image_url: String, sys
     }
 
     Ok(last_caption)
+}
+
+/// Второй проход по готовому описанию: модель проверяет его по тем же правилам
+/// и, если что-то не так, пишет замечание — им же мы запускаем перегенерацию.
+#[tauri::command]
+pub async fn review_caption(
+    state: State<'_, AppState>,
+    image_url: String,
+    caption: String,
+    system_prompt: String,
+    review_prompt: String,
+) -> Result<CaptionReview, String> {
+    let cfg = LmConfig::load(&state)?;
+    let client = state.client.clone();
+    let image_content_url = fetch_image_data_url(&client, &image_url, &cfg.image_mode).await?;
+
+    let mut user_text = format!(
+        "Правила, по которым составлялось описание:\n{}\n\nПредложенное описание:\n{}\n\nВерни ТОЛЬКО JSON-объект: {{\"ok\": true}} или {{\"ok\": false, \"comment\": \"что именно исправить\"}}.",
+        system_prompt, caption
+    );
+
+    if cfg.image_mode == "mixed" || cfg.image_mode == "path" {
+        user_text = format!("{}\n\nURL\\Path images: {}", user_text, image_url);
+    }
+
+    let raw = lm_chat(&client, &cfg, &review_prompt, &user_text, &image_content_url).await?;
+    println!("[review] ответ модели: {}", raw);
+
+    let review = parse_review(&raw);
+    println!("[review] вердикт ok={} comment={}", review.ok, review.comment);
+
+    Ok(review)
 }
 
 #[tauri::command]
@@ -401,6 +410,90 @@ pub async fn list_lmstudio_models(state: State<'_, AppState>) -> Result<Vec<Stri
         .map_err(|e| format!("Ошибка парсинга ответа от LMStudio: {}", e))?;
 
     Ok(json.data.into_iter().map(|m| m.id).collect())
+}
+
+/// Скачивает картинку и кодирует её в data-URL. В режиме "path" модель получает только ссылку.
+async fn fetch_image_data_url(client: &Client, image_url: &str, image_mode: &str) -> Result<String, String> {
+    if image_mode == "path" {
+        return Ok(String::new());
+    }
+
+    let bytes = client.get(image_url).send().await.map_err(|e| e.to_string())?
+        .bytes().await.map_err(|e| e.to_string())?;
+
+    Ok(format!("data:image/jpeg;base64,{}", general_purpose::STANDARD.encode(&bytes)))
+}
+
+/// Один запрос к LM Studio. Пустой image_data_url означает запрос без картинки.
+async fn lm_chat(client: &Client, cfg: &LmConfig, system_prompt: &str, user_text: &str, image_data_url: &str) -> Result<String, String> {
+    let mut content_array = vec![serde_json::json!({"type": "text", "content": user_text})];
+    if !image_data_url.is_empty() {
+        content_array.push(serde_json::json!({"type": "image", "data_url": image_data_url}));
+    }
+
+    let mut body = serde_json::json!({
+        "model": cfg.model,
+        "system_prompt": system_prompt,
+        "input": content_array,
+        "temperature": cfg.temperature,
+    });
+
+    if !cfg.integrations.trim().is_empty() {
+        let parsed = serde_json::from_str::<serde_json::Value>(&cfg.integrations)
+            .map_err(|e| format!("Ошибка парсинга JSON в поле Интеграции: {}\nПроверьте, что все ключи в двойных кавычках!", e))?;
+        if !parsed.is_array() {
+            return Err(format!("Поле Интеграции должно быть JSON массивом: {}", cfg.integrations));
+        }
+        body["integrations"] = parsed;
+    }
+
+    let mut req = client.post("http://localhost:1234/api/v1/chat").json(&body);
+    if !cfg.token.is_empty() {
+        req = req.bearer_auth(&cfg.token);
+    }
+
+    let resp = req.send().await.map_err(|e| e.to_string())?;
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    let mut raw = String::new();
+    if let Some(arr) = json["output"].as_array() {
+        for item in arr {
+            if let Some(c) = item["content"].as_str() {
+                raw.push_str(c);
+            }
+        }
+    }
+
+    Ok(raw)
+}
+
+/// Разбирает вердикт ревью. Непонятный ответ не должен останавливать конвейер,
+/// поэтому считаем описание принятым.
+fn parse_review(raw: &str) -> CaptionReview {
+    let Some(value) = extract_json_object(raw) else {
+        println!("[review] ответ не разобран, описание принято без замечаний");
+        return CaptionReview { ok: true, comment: String::new() };
+    };
+
+    let comment = value["comment"].as_str().unwrap_or("").trim().to_string();
+    let ok = value["ok"].as_bool().unwrap_or(comment.is_empty());
+
+    if !ok && comment.is_empty() {
+        return CaptionReview {
+            ok,
+            comment: "Описание не прошло проверку. Составь другое, строго по правилам.".to_string(),
+        };
+    }
+
+    CaptionReview { ok, comment }
+}
+
+/// Вытаскивает JSON-объект из ответа модели, даже если вокруг него есть рассуждения или Markdown.
+fn extract_json_object(raw: &str) -> Option<serde_json::Value> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+
+    serde_json::from_str(raw.get(start..=end)?).ok()
 }
 
 /// Достаёт код и текст ошибки из ответа VK.
