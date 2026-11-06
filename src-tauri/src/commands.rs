@@ -72,6 +72,9 @@ pub struct PhotoTask {
     pub owner_id: i64,
     pub album_id: u64,
     pub image_url: String,
+    /// Маленький размер для списка и превью: тянуть ради строки в 64 пикселя
+    /// полноразмерное фото — лишний трафик и повод для антифрода VK
+    pub thumb_url: String,
     pub caption: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,11 +102,20 @@ pub struct ModelsResponse {
     pub object: String,
 }
 
+/// reqwest без этого не шлёт User-Agent вовсе, а безымянный клиент, выкачивающий
+/// альбом и правящий описания, антифрод VK принимает за угон аккаунта.
+const USER_AGENT: &str = concat!(
+    "VKCaptionAI/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/ivanmem/vk-caption-ai)"
+);
+
 impl Default for AppState {
     fn default() -> Self {
-        // Используем стандартный клиент с таймаутами. 
+        // Используем стандартный клиент с таймаутами.
         // Принудительный HTTP/1.1 мог вызвать проблемы с VK API.
         let client = Client::builder()
+            .user_agent(USER_AGENT)
             .build()
             .unwrap_or_else(|_| Client::new());
 
@@ -247,6 +259,7 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
                 owner_id: item["owner_id"].as_i64().unwrap_or(0),
                 album_id: item["album_id"].as_u64().unwrap_or(0),
                 image_url: get_optimal_size(&sizes),
+                thumb_url: get_thumb_size(&sizes),
                 caption: text.to_string(),
                 status: "pending".into(),
                 error: None,
@@ -578,6 +591,19 @@ async fn vk_token_auth_error(client: &Client, token: &str) -> Option<i64> {
     println!("[vk] проверка токена users.get -> error_code={}", code);
 
     VK_AUTH_ERROR_CODES.contains(&code).then_some(code)
+}
+
+/// Самый маленький размер не меньше 200 пикселей — на превью в списке этого хватает.
+fn get_thumb_size(sizes: &[PhotoSize]) -> String {
+    let max_side = |s: &PhotoSize| s.width.max(s.height);
+
+    sizes
+        .iter()
+        .filter(|s| max_side(s) >= 200)
+        .min_by_key(|s| max_side(s))
+        .or_else(|| sizes.iter().max_by_key(|s| max_side(s)))
+        .map(|s| s.url.clone())
+        .unwrap_or_default()
 }
 
 fn get_optimal_size(sizes: &[PhotoSize]) -> String {

@@ -9,6 +9,7 @@ export interface PhotoTask {
   owner_id: number;
   album_id: number;
   image_url: string;
+  thumb_url: string;
   caption: string;
   status: 'pending' | 'processing' | 'completed' | 'error' | 'skipped';
   error?: string;
@@ -45,12 +46,12 @@ export const DEFAULT_REVIEW_PROMPT = `Ты — строгий редактор �
 Не придирайся по мелочам: отклоняй только явные ошибки — описание не про эту картинку,
 нарушены правила, есть лишний текст, Markdown или неверный формат.`;
 
-export const DEFAULT_SAVE_DELAY_MIN_SEC = 3;
-export const DEFAULT_SAVE_DELAY_MAX_SEC = 30;
+export const DEFAULT_SAVE_DELAY_MIN_SEC = 10;
+export const DEFAULT_SAVE_DELAY_MAX_SEC = 60;
 export const DEFAULT_REVIEW_RETRIES = 2;
 export const DEFAULT_REVIEW_TEMPERATURE = 0.3;
 export const DEFAULT_PREFETCH_COUNT = 1;
-export const DEFAULT_MAX_SAVES_PER_RUN = 100;
+export const DEFAULT_MAX_SAVES_PER_RUN = 50;
 
 export interface AppSettings {
   vkToken: string;

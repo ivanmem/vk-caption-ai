@@ -118,19 +118,28 @@
               <n-collapse-item title="Как получить VK Token" name="howto">
                 <ol>
                   <li>
-                    Перейдите на
-                    <n-a href="https://vkhost.github.io/" target="_blank">
-                      vkhost.github.io
-                    </n-a>
+                    Создайте Standalone-приложение на
+                    <n-a href="https://dev.vk.com/" target="_blank">dev.vk.com</n-a>
+                    и возьмите его ID
                   </li>
                   <li>
-                    Выберите <strong>VK Admin</strong> (или другое приложение)
+                    Откройте ссылку, подставив свой ID:
+                    <code>
+                      https://oauth.vk.com/authorize?client_id=ВАШ_ID&amp;scope=photos,offline&amp;response_type=token&amp;redirect_uri=https://oauth.vk.com/blank.html&amp;v=5.131
+                    </code>
                   </li>
                   <li>
                     Нажмите <strong>Разрешить</strong> и скопируйте токен из
                     адресной строки
                   </li>
                 </ol>
+                <n-alert type="warning" :bordered="false">
+                  Не берите токен официального клиента (из сессии vk.com) и
+                  готовые токены вроде VK Admin: они дают доступ к сообщениям,
+                  стене и группам, а запросы к API не из браузера с таким
+                  токеном антифрод VK принимает за кражу сессии. Собственное
+                  приложение со <code>scope=photos,offline</code> безопаснее.
+                </n-alert>
               </n-collapse-item>
             </n-collapse>
           </n-tab-pane>

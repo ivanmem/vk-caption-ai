@@ -102,7 +102,7 @@
             @click="handlePhotoClick(lastProcessedPhoto)"
           >
             <n-space>
-              <img :src="lastProcessedPhoto.image_url" alt="Photo" class="last-photo-img" />
+              <img :src="lastProcessedPhoto.thumb_url" alt="Photo" class="last-photo-img" />
               <n-space vertical justify="space-between" style="flex: 1">
                 <div>
                   <n-a
@@ -168,7 +168,7 @@
                 :class="{ 'is-clickable': !isProcessing }"
                 @click="handlePhotoClick(item)"
               >
-                <img :src="item.image_url" alt="Photo" class="photo-item-image" />
+                <img :src="item.thumb_url" alt="Photo" class="photo-item-image" />
                 <div class="photo-item-info">
                   <n-text strong>Фото #{{ item.id }}</n-text>
                   <n-text depth="3" style="font-size: 12px">
