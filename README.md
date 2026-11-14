@@ -312,6 +312,25 @@ npm run tauri:build
 ```
 
 На выходе получается NSIS-инсталлятор `VK Caption AI_<version>_x64-setup.exe`
-в каталоге `src-tauri/target/release/bundle/nsis/`. Конфигурация бандла,
-иконки и идентификатор приложения задаются в `src-tauri/tauri.conf.json` и
-`src-tauri/Cargo.toml`.
+в каталоге `src-tauri/target/release/bundle/nsis/`. Версия в имени файла берётся
+из `package.json` (`"version": "../package.json"` в `tauri.conf.json`), поэтому
+поднимать её надо в одном месте. Конфигурация бандла, иконки и идентификатор
+приложения задаются в `src-tauri/tauri.conf.json` и `src-tauri/Cargo.toml`.
+
+Версия в `package.json` должна быть полным semver (`0.7.0`, не `0.7`) — иначе
+tauri не соберётся.
+
+Порядок выпуска версии:
+
+```bash
+# 1. поднять "version" в package.json, закоммитить и поставить тег
+git commit -am "release: 0.7.0" && git tag 0.7.0 && git push origin main --follow-tags
+
+# 2. собрать инсталлятор
+npm run tauri:build
+
+# 3. выложить релиз; метка после # — то, что видно на странице релиза вместо имени файла
+gh release create 0.7.0 \
+  "src-tauri/target/release/bundle/nsis/VK Caption AI_0.7.0_x64-setup.exe#VK Caption AI 0.7.0 (установщик для Windows x64)" \
+  --title "VK Caption AI 0.7.0" --notes "..."
+```
