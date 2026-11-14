@@ -243,7 +243,7 @@
                 v-model:value="appStore.settings.lmstudioIntegrations"
                 type="textarea"
                 :autosize="{ minRows: 3, maxRows: 10 }"
-                placeholder='[{ "type": "plugin", "id": "mcp/deepdanbooru", "allowed_tools": ["tag_image"] }]'
+                placeholder='[{ "type": "plugin", "id": "mcp/имя", "allowed_tools": ["инструмент"] }]'
               />
               <template #feedback>
                 JSON-массив интеграций, уходит в поле `integrations` API LM
