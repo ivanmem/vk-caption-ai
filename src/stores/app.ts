@@ -147,6 +147,8 @@ export const useAppStore = defineStore('app', () => {
   const pendingCaption = ref('');
   const saveNowRequested = ref(false);
   const skipRequested = ref(false);
+  /** Пользователь правит описание: пауза не кончится, пока он не нажмёт «Сохранить сейчас» */
+  const captionEdited = ref(false);
 
   // Сколько описаний записано в VK за текущий запуск и упёрлись ли мы в лимит
   const savedThisRun = ref(0);
@@ -293,7 +295,6 @@ export const useAppStore = defineStore('app', () => {
     return (from === to ? from : random(from, to)) * 1000;
   }
 
-  // Ждём по секунде, чтобы «Остановить» срабатывало сразу и был виден обратный отсчёт
   /** Не ждать остаток паузы — записать описание в VK прямо сейчас */
   function saveCaptionNow(): void {
     saveNowRequested.value = true;
@@ -304,16 +305,23 @@ export const useAppStore = defineStore('app', () => {
     skipRequested.value = true;
   }
 
+  /** Описание правят прямо сейчас — нельзя сохранить недописанное по таймеру */
+  function holdSave(): void {
+    captionEdited.value = true;
+  }
+
+  // Ждём по секунде, чтобы «Остановить» срабатывало сразу и был виден обратный отсчёт
   async function waitUntil(deadline: number): Promise<void> {
     while (isProcessing.value && !saveNowRequested.value && !skipRequested.value) {
       const left = deadline - Date.now();
-      if (left <= 0) {
+      if (left <= 0 && !captionEdited.value) {
         break;
       }
 
       stage.value = 'waiting';
-      waitSecondsLeft.value = Math.ceil(left / 1000);
-      await delay(Math.min(left, 1000));
+      waitSecondsLeft.value = Math.max(0, Math.ceil(left / 1000));
+      // Пауза уже вышла, но описание правят: опрашиваем реже, чем крутим цикл впустую
+      await delay(left > 0 ? Math.min(left, 1000) : 300);
     }
 
     waitSecondsLeft.value = 0;
@@ -476,6 +484,7 @@ export const useAppStore = defineStore('app', () => {
           pendingCaption.value = caption;
           saveNowRequested.value = false;
           skipRequested.value = false;
+          captionEdited.value = false;
 
           // Держим случайную паузу: подряд идущие правки VK считает флудом. Время ревью
           // и раздумий пользователя уже прошло, поэтому ждём только остаток
@@ -654,8 +663,10 @@ export const useAppStore = defineStore('app', () => {
     stage,
     waitSecondsLeft,
     pendingCaption,
+    captionEdited,
     saveCaptionNow,
     skipCurrentPhoto,
+    holdSave,
     savedThisRun,
     limitReached,
     saveLimit,

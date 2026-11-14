@@ -153,6 +153,7 @@
                 type="textarea"
                 :autosize="{ minRows: 2, maxRows: 8 }"
                 placeholder="Описание, которое уйдёт в VK"
+                @input="appStore.holdSave()"
               />
               <n-space>
                 <n-button type="primary" size="small" @click="appStore.saveCaptionNow()">
@@ -236,14 +237,16 @@ const appStore = useAppStore();
 const {
   settings, photos, isProcessing, stats, progress, activePhoto, currentPhotoIndex,
   lastProcessedPhoto, stage, waitSecondsLeft, savedThisRun, limitReached, saveLimit,
-  pendingCaption,
+  pendingCaption, captionEdited,
 } = storeToRefs(appStore);
 
 const undoing = ref(false);
 
 const stageLabel = computed(() => {
   if (stage.value === 'waiting') {
-    return `Пауза перед сохранением: ${waitSecondsLeft.value} с`;
+    return captionEdited.value
+      ? 'Правка: нажмите «Сохранить сейчас»'
+      : `Пауза перед сохранением: ${waitSecondsLeft.value} с`;
   }
 
   return stageLabels[stage.value];
