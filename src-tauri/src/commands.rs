@@ -665,6 +665,9 @@ fn parse_caption(raw: &str) -> String {
 
 }
 
+/// Максимум по промпту: текст + 3 тега + имя персонажа + эмодзи
+const MAX_ITEMS: usize = 6;
+
 fn extract_items(raw: &str) -> Vec<String> {
     let svc: &[&str] = &["текст", "подсказка", "prompt", "hint", "image", "description", "жанр", "аниме", "стиль", "объект", "цвет", 
         "text", "tags", "tag", "теги", "тег", "описание", "caption", "игра", "скриншот", "диалог", "персонаж", "фон", "фото", "изображение", "рисунок", "комната", "интерьер", "окно", "текстом"];
@@ -681,9 +684,11 @@ fn extract_items(raw: &str) -> Vec<String> {
                 if let Some(s) = start {
                     let slice: String = chars[s..=i].iter().collect();
                     if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&slice) {
+                        let mut seen = std::collections::HashSet::new();
                         return parsed.into_iter()
                             .filter(|t| !t.trim().is_empty() && !svc.contains(&t.to_lowercase().trim()))
-                            .take(5).collect();
+                            .filter(|t| seen.insert(t.to_lowercase()))
+                            .take(MAX_ITEMS).collect();
                     }
                 }
             }
@@ -712,7 +717,7 @@ fn extract_items(raw: &str) -> Vec<String> {
             cur.push(c);
         }
     }
-    items.into_iter().take(5).collect()
+    items.into_iter().take(MAX_ITEMS).collect()
 }
 
 /// Токен из redirect_uri: VK кладёт его во фрагмент (`#access_token=...`),
