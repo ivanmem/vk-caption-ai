@@ -2,7 +2,10 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{
+    AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 
 
@@ -83,7 +86,9 @@ pub struct PhotoTask {
 
 pub struct AppState {
     pub settings: Mutex<AppSettings>,
-    pub client: Client,
+    /// Пересоздаётся на старте под User-Agent вебвью: токен добыт в этом же
+    /// вебвью, и запросы к VK должны уходить от того же клиента
+    pub http: Mutex<Client>,
     /// Последняя скачанная картинка (url, data-url): одно и то же фото уходит в модель
     /// несколько раз — генерация, ревью, перегенерация
     pub last_image: Mutex<Option<(String, String)>>,
@@ -110,21 +115,41 @@ const USER_AGENT: &str = concat!(
     " (+https://github.com/ivanmem/vk-caption-ai)"
 );
 
+fn build_client(user_agent: &str) -> Client {
+    // Используем стандартный клиент с таймаутами.
+    // Принудительный HTTP/1.1 мог вызвать проблемы с VK API.
+    Client::builder()
+        .user_agent(user_agent)
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
 impl Default for AppState {
     fn default() -> Self {
-        // Используем стандартный клиент с таймаутами.
-        // Принудительный HTTP/1.1 мог вызвать проблемы с VK API.
-        let client = Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .unwrap_or_else(|_| Client::new());
-
         Self {
             settings: Mutex::new(AppSettings::default()),
-            client,
+            http: Mutex::new(build_client(USER_AGENT)),
             last_image: Mutex::new(None),
         }
     }
+}
+
+impl AppState {
+    pub fn client(&self) -> Client {
+        match self.http.lock() {
+            Ok(c) => c.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+/// Фронт отдаёт navigator.userAgent вебвью, чтобы запросы к VK шли от того же
+/// клиента, в котором пользователь входил в аккаунт.
+#[tauri::command]
+pub fn set_user_agent(state: State<AppState>, user_agent: String) -> Result<(), String> {
+    let mut client = state.http.lock().map_err(|e| e.to_string())?;
+    *client = build_client(&user_agent);
+    Ok(())
 }
 
 #[tauri::command]
@@ -165,7 +190,7 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
         return Err("Album ID не заполнен. Перейдите в Настройки и сохраните ID альбома.".to_string());
     }
 
-    let client_ref = &state.client;
+    let client_ref = &state.client();
     
     let fetch_batch = |offset: u64| {
         let mut params = vec![
@@ -198,7 +223,7 @@ pub async fn load_photos_without_caption(state: State<'_, AppState>) -> Result<V
         .map_err(|e| format!("Ошибка парсинга ответа VK: {}", e))?;
 
     if let Some((code, msg)) = vk_error_parts(&json) {
-        return Err(vk_error_message(&state.client, &vk_token, code, &msg).await);
+        return Err(vk_error_message(&state.client(), &vk_token, code, &msg).await);
     }
 
     let items_array = json["response"]["items"].as_array()
@@ -312,7 +337,7 @@ pub struct CaptionReview {
 #[tauri::command]
 pub async fn generate_caption(state: State<'_, AppState>, image_url: String, system_prompt: String, user_comment: Option<String>) -> Result<String, String> {
     let cfg = LmConfig::load(&state)?;
-    let client = state.client.clone();
+    let client = state.client();
     let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 
     const SYSTEM_RETRY: &str = "Ответ должен быть строго JSON-массивом строк. Ничего кроме этого. Пример: [\"тег1\", \"тег2\"]";
@@ -367,7 +392,7 @@ pub async fn review_caption(
 ) -> Result<CaptionReview, String> {
     // Ревью должно быть предсказуемым, поэтому температура своя, не как у генерации
     let cfg = LmConfig { temperature, ..LmConfig::load(&state)? };
-    let client = state.client.clone();
+    let client = state.client();
     let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 
     let mut user_text = format!(
@@ -391,7 +416,7 @@ pub async fn review_caption(
 #[tauri::command]
 pub async fn save_photo_caption(state: State<'_, AppState>, photo_id: u64, owner_id: i64, caption: String) -> Result<(), String> {
     let vk_token = { let s = state.settings.lock().map_err(|e| e.to_string())?; s.vk_token.clone() };
-    let client = state.client.clone();
+    let client = state.client();
     let params = [("photo_id", photo_id.to_string()), ("owner_id", owner_id.to_string()), ("caption", caption), ("access_token", vk_token.clone()), ("v", "5.131".to_string())];
     let resp = client.post("https://api.vk.com/method/photos.edit").form(&params).send().await.map_err(|e| e.to_string())?;
     let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
@@ -403,7 +428,7 @@ pub async fn save_photo_caption(state: State<'_, AppState>, photo_id: u64, owner
 
 #[tauri::command]
 pub async fn list_lmstudio_models(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let client = state.client.clone();
+    let client = state.client();
     let lm_token = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         s.lmstudio_token.clone()
@@ -448,7 +473,7 @@ async fn fetch_image_data_url(state: &State<'_, AppState>, image_url: &str, imag
         }
     }
 
-    let bytes = state.client.get(image_url).send().await.map_err(|e| e.to_string())?
+    let bytes = state.client().get(image_url).send().await.map_err(|e| e.to_string())?
         .bytes().await.map_err(|e| e.to_string())?;
     let data_url = format!("data:image/jpeg;base64,{}", general_purpose::STANDARD.encode(&bytes));
 
@@ -691,4 +716,241 @@ fn extract_items(raw: &str) -> Vec<String> {
         }
     }
     items.into_iter().take(5).collect()
+}
+
+/// Токен из redirect_uri: VK кладёт его во фрагмент (`#access_token=...`),
+/// а отказ в доступе возвращает и в query (`?error=...`)
+fn token_from_redirect(url: &Url) -> Result<String, String> {
+    let raw = match url.fragment() {
+        Some(fragment) if !fragment.is_empty() => fragment,
+        _ => url.query().unwrap_or_default(),
+    };
+    // Разбираем через Url: он сам раскодирует %XX и «+» в тексте ошибки
+    let parsed = Url::parse(&format!("http://local/?{raw}")).map_err(|e| e.to_string())?;
+
+    let mut token = None;
+    let mut error = None;
+    let mut description = None;
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "access_token" => token = Some(value.into_owned()),
+            "error" => error = Some(value.into_owned()),
+            "error_description" => description = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    token.ok_or_else(|| {
+        description
+            .or(error)
+            .unwrap_or_else(|| "VK не вернул токен".to_string())
+    })
+}
+
+/// Ссылка ровно как у vkhost: display=page, числовой scope (photos 4 + offline 65536)
+/// и никакого v — с v VK ID отвечает «Unknown method passed».
+fn vk_auth_url(client_id: &str) -> Result<Url, String> {
+    let client_id = client_id.trim();
+    if client_id.is_empty() {
+        return Err("Укажите ID приложения VK".to_string());
+    }
+
+    Url::parse(&format!(
+        "https://oauth.vk.com/authorize?client_id={client_id}&scope=65540&redirect_uri=https://oauth.vk.com/blank.html&display=page&response_type=token&revoke=1"
+    ))
+    .map_err(|e| e.to_string())
+}
+
+/// Способ vkhost: страницу авторизации открывает браузер пользователя, где он уже
+/// залогинен — в пустом вебвью форма входа VK ID падает с «Unknown method passed».
+///
+/// Браузер идёт не прямо на VK, а на свою страничку на localhost: она отдаёт нам
+/// свой navigator.userAgent (его же потом шлём в API) и уводит на авторизацию.
+#[tauri::command]
+pub async fn vk_auth_in_browser(app: AppHandle, client_id: String) -> Result<(), String> {
+    let auth_url = vk_auth_url(&client_id)?.to_string();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        // Браузер успевает сделать два запроса (страница и /ua); больше ждать нечего
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            serve_user_agent_page(listener, auth_url, app_handle),
+        )
+        .await;
+    });
+
+    app.opener()
+        .open_url(format!("http://127.0.0.1:{port}/"), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Событие с User-Agent браузера; фронт подставляет его в настройки
+pub const VK_USER_AGENT_EVENT: &str = "vk-user-agent";
+
+async fn serve_user_agent_page(
+    listener: tokio::net::TcpListener,
+    auth_url: String,
+    app: AppHandle,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let auth_js = serde_json::to_string(&auth_url).unwrap_or_else(|_| "\"\"".to_string());
+    let page = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>VK Caption AI</title>\
+         <p>Открываем страницу авторизации ВКонтакте…</p>\
+         <script>fetch('/ua?v='+encodeURIComponent(navigator.userAgent))\
+         .catch(function(){{}}).then(function(){{location.replace({auth_js})}})</script>"
+    );
+
+    loop {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+
+        // Chrome шлёт десяток заголовков, а UA в query ещё и percent-encoded
+        let mut buf = [0u8; 8192];
+        let Ok(read) = socket.read(&mut buf).await else {
+            continue;
+        };
+        let request = String::from_utf8_lossy(&buf[..read]);
+        let path = request
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_string();
+
+        let response = if let Some(raw) = path.strip_prefix("/ua?v=") {
+            if let Ok(parsed) = Url::parse(&format!("http://local/?v={raw}")) {
+                if let Some((_, ua)) = parsed.query_pairs().find(|(k, _)| k == "v") {
+                    let _ = app.emit(VK_USER_AGENT_EVENT, ua.into_owned());
+                }
+            }
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+        } else {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                page.len(),
+                page
+            )
+        };
+
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.shutdown().await;
+
+        if path.starts_with("/ua") {
+            return;
+        }
+    }
+}
+
+/// Токен из ссылки, которую пользователь скопировал из адресной строки после входа
+#[tauri::command]
+pub fn vk_token_from_url(url: String) -> Result<String, String> {
+    let url = Url::parse(url.trim()).map_err(|_| "Это не ссылка от VK".to_string())?;
+    token_from_redirect(&url)
+}
+
+/// Вход во ВКонтакте прямо в приложении: токен выдаётся тому же вебвью, чей
+/// User-Agent потом уходит в запросы к API, поэтому сессия выглядит цельной.
+#[tauri::command]
+pub async fn vk_login(app: AppHandle, client_id: String) -> Result<String, String> {
+    let auth_url = vk_auth_url(&client_id)?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let tx = std::sync::Arc::new(Mutex::new(Some(tx)));
+    let tx_nav = tx.clone();
+
+    // Форма входа VK ID внутри authorize падает с «Unknown method passed», поэтому
+    // сперва обычный vk.com: как только он пустит в ленту, уводим окно на авторизацию
+    let start_url = Url::parse("https://vk.com/").map_err(|e| e.to_string())?;
+    let app_nav = app.clone();
+    let redirected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Окно от прошлой попытки могло не успеть закрыться: build с тем же label упадёт
+    if let Some(existing) = app.get_webview_window("vk-login") {
+        let _ = existing.destroy();
+    }
+
+    let window = WebviewWindowBuilder::new(&app, "vk-login", WebviewUrl::External(start_url))
+        .title("Вход ВКонтакте")
+        .inner_size(760.0, 800.0)
+        .on_navigation(move |url| {
+            if url.path().ends_with("/blank.html") {
+                if let Ok(mut slot) = tx_nav.lock() {
+                    if let Some(tx) = slot.take() {
+                        let _ = tx.send(token_from_redirect(url));
+                    }
+                }
+
+                return false;
+            }
+
+            // Лента открывается только залогиненному — значит можно просить токен
+            let host = url.host_str().unwrap_or_default();
+            let logged_in = (host.ends_with("vk.com") || host.ends_with("vk.ru"))
+                && url.path().starts_with("/feed");
+            if logged_in && !redirected.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                if let Some(window) = app_nav.get_webview_window("vk-login") {
+                    let _ = window.navigate(auth_url.clone());
+                }
+            }
+
+            true
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    window.on_window_event(move |event| {
+        if !matches!(event, WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed) {
+            return;
+        }
+
+        if let Ok(mut slot) = tx.lock() {
+            if let Some(tx) = slot.take() {
+                let _ = tx.send(Err("Вход отменён".to_string()));
+            }
+        }
+    });
+
+    let result = rx.await.unwrap_or_else(|_| Err("Вход отменён".to_string()));
+    if let Some(window) = app.get_webview_window("vk-login") {
+        let _ = window.close();
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{token_from_redirect, Url};
+
+    fn redirect(tail: &str) -> Url {
+        Url::parse(&format!("https://oauth.vk.com/blank.html{tail}")).unwrap()
+    }
+
+    #[test]
+    fn fragment_parsing() {
+        assert_eq!(
+            token_from_redirect(&redirect("#access_token=vk1.a.x&expires_in=0&user_id=1")).unwrap(),
+            "vk1.a.x"
+        );
+        assert_eq!(
+            token_from_redirect(&redirect("#error=access_denied&error_description=User+denied"))
+                .unwrap_err(),
+            "User denied"
+        );
+        // Отказ VK умеет возвращать и в query, с процентным кодированием
+        assert_eq!(
+            token_from_redirect(&redirect("?error_description=%D0%9E%D1%82%D0%BA%D0%B0%D0%B7"))
+                .unwrap_err(),
+            "Отказ"
+        );
+        assert!(token_from_redirect(&redirect("")).is_err());
+    }
 }

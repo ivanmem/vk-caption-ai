@@ -75,6 +75,15 @@ const theme = computed(() => (themeStore.isDark ? darkTheme : null));
 onMounted(async () => {
   const appStore = useAppStore();
   const s = appStore.settings;
+
+  // Запросы к VK должны уходить с тем же User-Agent, в котором выдавали токен:
+  // своё окно входа — это UA вебвью, vkhost-способ — UA браузера из настроек
+  await invoke('set_user_agent', {
+    userAgent: s.vkUserAgent?.trim() || navigator.userAgent,
+  }).catch((e) => {
+    console.error('[App] Не удалось передать User-Agent в бэкенд', e);
+  });
+
   if (s.vkToken) {
     try {
       await invoke('save_settings', {

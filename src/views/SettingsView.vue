@@ -51,6 +51,49 @@
             display-directive="show"
           >
           <n-tab-pane name="vk" tab="ВКонтакте">
+            <n-form-item label="Вход ВКонтакте">
+              <n-space vertical style="width: 100%">
+                <n-input-group>
+                  <n-input
+                    v-model:value="appStore.settings.vkAppId"
+                    placeholder="ID приложения (свой Standalone с dev.vk.com)"
+                  />
+                  <n-button :loading="loggingIn" @click="handleVkLogin">
+                    В окне приложения
+                  </n-button>
+                  <n-button type="primary" @click="handleVkAuthInBrowser">
+                    В браузере
+                  </n-button>
+                </n-input-group>
+                <n-input-group>
+                  <n-input
+                    v-model:value="authUrl"
+                    placeholder="Вставьте ссылку из адресной строки после входа"
+                  />
+                  <n-button @click="handleTokenFromUrl">Взять токен</n-button>
+                </n-input-group>
+              </n-space>
+              <template #feedback>
+                «В окне приложения» — сначала откроется обычный vk.com: войдите,
+                и окно само перейдёт к выдаче токена; он достанется вебвью
+                программы, от которого потом уходят запросы. «В браузере» — путь
+                vkhost: вход там, где вы уже залогинены, сюда вставляете ссылку
+                с blank.html, User-Agent подставится сам.
+              </template>
+            </n-form-item>
+
+            <n-form-item label="User-Agent">
+              <n-input
+                v-model:value="appStore.settings.vkUserAgent"
+                placeholder="Пусто — User-Agent окна приложения"
+              />
+              <template #feedback>
+                Если токен получен в браузере, вставьте сюда его User-Agent
+                (например с whatmyuseragent.com): VK считает угоном, когда токен
+                выдан одному клиенту, а запросы идут от другого.
+              </template>
+            </n-form-item>
+
             <n-form-item label="VK Token" path="vkToken">
               <n-space vertical style="width: 100%">
                 <n-input-group>
@@ -123,14 +166,13 @@
                     и возьмите его ID
                   </li>
                   <li>
-                    Откройте ссылку, подставив свой ID:
-                    <code>
-                      https://oauth.vk.com/authorize?client_id=ВАШ_ID&amp;scope=photos,offline&amp;response_type=token&amp;redirect_uri=https://oauth.vk.com/blank.html&amp;v=5.131
-                    </code>
+                    Впишите ID в поле «Вход ВКонтакте» и нажмите
+                    <strong>В окне приложения</strong> — токен подставится сам
                   </li>
                   <li>
-                    Нажмите <strong>Разрешить</strong> и скопируйте токен из
-                    адресной строки
+                    Если VK ругается «Unknown method passed», нажмите
+                    <strong>В браузере</strong>, войдите там и вставьте ссылку
+                    с blank.html в поле ниже
                   </li>
                 </ol>
                 <n-alert type="warning" :bordered="false">
@@ -390,7 +432,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, h } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, h } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { onBeforeRouteLeave } from "vue-router";
 import { onKeyStroke } from "@vueuse/core";
 import type { FormInst, FormRules } from "naive-ui";
@@ -452,6 +495,8 @@ const activeTab = ref("vk");
 const saving = ref(false);
 const loadingAlbums = ref(false);
 const checkingToken = ref(false);
+const loggingIn = ref(false);
+const authUrl = ref("");
 const tokenStatus = ref<{ ok: boolean; text: string } | null>(null);
 const albumOptions = ref<
   Array<{ label: string; value: string; thumb?: string; size?: number }>
@@ -497,6 +542,14 @@ interface VkError {
 }
 
 onMounted(handleModelsFetch);
+
+// Страничка на localhost, через которую уходит браузер, отдаёт свой User-Agent
+const unlistenUserAgent = listen<string>("vk-user-agent", ({ payload }) => {
+  appStore.settings.vkUserAgent = payload;
+  console.log("[Settings] User-Agent браузера получен:", payload);
+});
+
+onUnmounted(async () => (await unlistenUserAgent)());
 
 // Альбомы и статус относятся к прежнему токену, с новым они уже неправда
 watch(
@@ -582,6 +635,9 @@ async function handleSave(): Promise<boolean> {
         lmstudio_integrations: s.lmstudioIntegrations ?? "",
       },
     });
+    await invoke("set_user_agent", {
+      userAgent: s.vkUserAgent?.trim() || navigator.userAgent,
+    });
     appStore.saveSettings({
       ...s,
       systemPrompt: systemPromptToStore,
@@ -660,6 +716,8 @@ function snapshotOf(
 ): string {
   return JSON.stringify([
     settings.vkToken,
+    settings.vkAppId ?? "",
+    settings.vkUserAgent ?? "",
     settings.vkAlbumId,
     settings.vkOwnerId,
     settings.lmstudioModel,
@@ -753,6 +811,51 @@ function fetchJsonp<T>(url: string, callbackName: string): Promise<T> {
 
 function vkCallbackName(): string {
   return `vk_cb_${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
+
+async function handleVkAuthInBrowser(): Promise<void> {
+  try {
+    await invoke("vk_auth_in_browser", {
+      clientId: appStore.settings.vkAppId ?? "",
+    });
+    message.info(
+      "Войдите в браузере и вставьте сюда ссылку с blank.html, User-Agent подставится сам",
+    );
+  } catch (e) {
+    console.error("[Settings] Не удалось открыть страницу авторизации", e);
+    message.error(typeof e === "string" ? e : String(e));
+  }
+}
+
+async function handleTokenFromUrl(): Promise<void> {
+  try {
+    const token = await invoke<string>("vk_token_from_url", { url: authUrl.value });
+    appStore.settings.vkToken = token;
+    authUrl.value = "";
+    message.success("Токен получен, не забудьте сохранить");
+  } catch (e) {
+    console.error("[Settings] В ссылке нет токена", e);
+    message.error(typeof e === "string" ? e : String(e));
+  }
+}
+
+async function handleVkLogin(): Promise<void> {
+  loggingIn.value = true;
+
+  try {
+    const token = await invoke<string>("vk_login", {
+      clientId: appStore.settings.vkAppId ?? "",
+    });
+    appStore.settings.vkToken = token;
+    // Токен выдан вебвью приложения, значит UA браузера от прошлого входа больше не тот
+    appStore.settings.vkUserAgent = "";
+    message.success("Токен получен, не забудьте сохранить");
+  } catch (e) {
+    console.error("[Settings] Вход ВКонтакте не удался", e);
+    message.error(typeof e === "string" ? e : String(e));
+  } finally {
+    loggingIn.value = false;
+  }
 }
 
 async function handleCheckToken(): Promise<void> {

@@ -187,7 +187,7 @@ pub async fn organizer_classify_image(
         }
     }
 
-    let client = state.client.clone();
+    let client = state.client();
     println!(
         "[organizer] classify {} (model={}, temperature={}, folders={:?})",
         file_path, model, temperature, folders
@@ -310,7 +310,7 @@ pub async fn organizer_generate_folders(
         }
     }
 
-    let client = state.client.clone();
+    let client = state.client();
     println!(
         "[organizer] generate folders (model={}, temperature={}, existing={:?})",
         model, temperature, existing_folders

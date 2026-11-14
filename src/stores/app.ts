@@ -53,8 +53,18 @@ export const DEFAULT_REVIEW_TEMPERATURE = 0.3;
 export const DEFAULT_PREFETCH_COUNT = 1;
 export const DEFAULT_MAX_SAVES_PER_RUN = 50;
 
+/**
+ * Приложение «vk.com». В пустом вебвью форма входа VK ID для него падает с
+ * «Unknown method passed», поэтому вход — через браузер, где сессия уже есть
+ */
+export const DEFAULT_VK_APP_ID = '6287487';
+
 export interface AppSettings {
   vkToken: string;
+  /** ID Standalone-приложения VK для входа прямо из программы */
+  vkAppId?: string;
+  /** User-Agent браузера, в котором выдан токен; пусто — UA вебвью приложения */
+  vkUserAgent?: string;
   vkAlbumId: string;
   vkOwnerId: string;
   lmstudioModel: string;
@@ -93,6 +103,8 @@ export interface ManualReviewPayload {
 export const useAppStore = defineStore('app', () => {
   const settings = ref<AppSettings>({
     vkToken: '',
+    vkAppId: DEFAULT_VK_APP_ID,
+    vkUserAgent: '',
     vkAlbumId: '',
     vkOwnerId: '',
     lmstudioModel: 'zai-org/glm-4.6v-flash',
@@ -624,6 +636,7 @@ export const useAppStore = defineStore('app', () => {
         ctx.store.settings.temperature = 1.1;
       }
 
+      ctx.store.settings.vkAppId ??= DEFAULT_VK_APP_ID;
       ctx.store.settings.autoReviewEnabled ??= false;
       ctx.store.settings.reviewPrompt ??= '';
       ctx.store.settings.reviewMaxRetries ??= DEFAULT_REVIEW_RETRIES;

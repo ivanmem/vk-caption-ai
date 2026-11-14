@@ -30,6 +30,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
+            commands::set_user_agent,
+            commands::vk_login,
+            commands::vk_auth_in_browser,
+            commands::vk_token_from_url,
             commands::load_photos_without_caption,
             commands::generate_caption,
             commands::review_caption,
