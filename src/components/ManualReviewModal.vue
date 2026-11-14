@@ -80,6 +80,7 @@
         </n-button>
 
         <n-button
+          v-if="canRegenerate"
           :type="showComment ? 'warning' : 'default'"
           :loading="isActionProcessing"
           @click="handleRegenerate"
@@ -122,11 +123,15 @@ import { storeToRefs } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 
 const appStore = useAppStore();
-const { manualReview: review, isRegenerating } = storeToRefs(appStore);
+const { manualReview: review, isRegenerating, isProcessing, stage } = storeToRefs(appStore);
 
 const userComment = ref('');
 const showComment = ref(false);
 const editableCaption = ref('');
+
+// Правка из списка во время автозапуска: второй запрос занял бы видеокарту параллельно
+// с основным циклом, поэтому перегенерацию показываем только когда цикл ждёт нас сам
+const canRegenerate = computed(() => !isProcessing.value || stage.value === 'awaiting');
 
 const isActionProcessing = computed(() => {
   return isRegenerating.value || review.value?.photo.status === 'processing';

@@ -183,7 +183,7 @@
             <template #default="{ item }">
               <div
                 class="photo-item"
-                :class="{ 'is-clickable': !isProcessing }"
+                :class="{ 'is-clickable': item.id !== activePhoto?.id }"
                 @click="handlePhotoClick(item)"
               >
                 <img :src="item.thumb_url" alt="Photo" class="photo-item-image" />
@@ -303,8 +303,10 @@ async function handleUndo() {
 }
 
 function handlePhotoClick(photo: PhotoTask): void {
-  if (isProcessing.value) {
-    message.warning('Нельзя редактировать во время общей обработки');
+  // Фото, которое сейчас генерируется, правим на главной, а не в модалке: иначе два
+  // редактора на одно описание
+  if (photo.id === activePhoto.value?.id) {
+    message.warning('Это фото обрабатывается прямо сейчас - правьте описание выше');
     return;
   }
 

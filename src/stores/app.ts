@@ -189,6 +189,10 @@ export const useAppStore = defineStore('app', () => {
   // Запрашивает подтверждение у пользователя в ручном режиме
   function requestManualReview(photo: PhotoTask, caption: string): Promise<{ action: 'save' | 'skip' | 'regenerate' | 'cancel'; comment?: string; editedCaption?: string }> {
     return new Promise((resolve) => {
+      // Модалка одна на всех: если в ней уже кого-то ждут (правка из списка), закрываем
+      // того ожидающего, иначе его промис повиснет навсегда
+      manualReview.value?.resolve('cancel');
+
       manualReview.value = {
         photo,
         caption,
@@ -374,6 +378,13 @@ export const useAppStore = defineStore('app', () => {
 
         currentPhotoIndex.value = i;
         const photo = photos.value[i];
+
+        // Пользователь успел поправить и сохранить это фото из списка, пока шёл цикл
+        if (photo.status === 'completed') {
+          stats.value.processed++;
+          continue;
+        }
+
         photo.status = 'processing';
 
         try {
