@@ -146,7 +146,24 @@
                 {{ getStatusLabel(activePhoto.status) }}
               </n-tag>
             </n-space>
-            <n-text v-if="activePhoto.caption" type="success">{{ activePhoto.caption }}</n-text>
+            <!-- Во время паузы описание ещё не записано — его можно поправить -->
+            <template v-if="stage === 'waiting'">
+              <n-input
+                v-model:value="pendingCaption"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 8 }"
+                placeholder="Описание, которое уйдёт в VK"
+              />
+              <n-space>
+                <n-button type="primary" size="small" @click="appStore.saveCaptionNow()">
+                  Сохранить сейчас
+                </n-button>
+                <n-button size="small" @click="appStore.skipCurrentPhoto()">
+                  Пропустить фото
+                </n-button>
+              </n-space>
+            </template>
+            <n-text v-else-if="activePhoto.caption" type="success">{{ activePhoto.caption }}</n-text>
             <n-text v-if="activePhoto.error" type="error">{{ activePhoto.error }}</n-text>
             <n-text v-if="activePhoto.reviewComment" depth="3" style="font-size: 13px">
               Замечание ревью: {{ activePhoto.reviewComment }}
@@ -198,7 +215,7 @@ import { ref, computed } from 'vue';
 import { useMessage } from 'naive-ui';
 import {
   NCard, NTag, NGrid, NGi, NStatistic, NIcon, NText, NProgress,
-  NSpace, NButton, NAlert, NDivider, NVirtualList, NA,
+  NSpace, NButton, NAlert, NDivider, NVirtualList, NA, NInput,
 } from 'naive-ui';
 import {
   ImagesOutline as ImagesIcon,
@@ -219,6 +236,7 @@ const appStore = useAppStore();
 const {
   settings, photos, isProcessing, stats, progress, activePhoto, currentPhotoIndex,
   lastProcessedPhoto, stage, waitSecondsLeft, savedThisRun, limitReached, saveLimit,
+  pendingCaption,
 } = storeToRefs(appStore);
 
 const undoing = ref(false);

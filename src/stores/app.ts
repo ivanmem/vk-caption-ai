@@ -143,6 +143,10 @@ export const useAppStore = defineStore('app', () => {
   // Что приложение делает прямо сейчас — для индикатора на главной
   const stage = ref<ProcessingStage>('idle');
   const waitSecondsLeft = ref(0);
+  /** Описание, которое уйдёт в VK: во время паузы его можно править прямо на главной */
+  const pendingCaption = ref('');
+  const saveNowRequested = ref(false);
+  const skipRequested = ref(false);
 
   // Сколько описаний записано в VK за текущий запуск и упёрлись ли мы в лимит
   const savedThisRun = ref(0);
@@ -290,8 +294,18 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // Ждём по секунде, чтобы «Остановить» срабатывало сразу и был виден обратный отсчёт
+  /** Не ждать остаток паузы — записать описание в VK прямо сейчас */
+  function saveCaptionNow(): void {
+    saveNowRequested.value = true;
+  }
+
+  /** Не сохранять это фото и перейти к следующему */
+  function skipCurrentPhoto(): void {
+    skipRequested.value = true;
+  }
+
   async function waitUntil(deadline: number): Promise<void> {
-    while (isProcessing.value) {
+    while (isProcessing.value && !saveNowRequested.value && !skipRequested.value) {
       const left = deadline - Date.now();
       if (left <= 0) {
         break;
@@ -458,6 +472,11 @@ export const useAppStore = defineStore('app', () => {
             continue;
           }
 
+          // Пауза — окно, в котором описание видно и его можно поправить на главной
+          pendingCaption.value = caption;
+          saveNowRequested.value = false;
+          skipRequested.value = false;
+
           // Держим случайную паузу: подряд идущие правки VK считает флудом. Время ревью
           // и раздумий пользователя уже прошло, поэтому ждём только остаток
           await waitUntil(saveNotBefore);
@@ -465,6 +484,15 @@ export const useAppStore = defineStore('app', () => {
           if (!isProcessing.value) {
             break;
           }
+
+          if (skipRequested.value) {
+            console.log('[AppStore] Фото пропущено пользователем во время паузы');
+            photo.status = 'skipped';
+            stats.value.skipped++;
+            continue;
+          }
+
+          caption = pendingCaption.value.trim() || caption;
 
           // Сохраняем в VK
           stage.value = 'saving';
@@ -480,6 +508,7 @@ export const useAppStore = defineStore('app', () => {
           photo.status = 'completed';
           photo.error = undefined;
           photo.reviewComment = '';
+          pendingCaption.value = '';
           stats.value.processed++;
           savedThisRun.value++;
           lastProcessedPhoto.value = { ...photo };
@@ -498,6 +527,7 @@ export const useAppStore = defineStore('app', () => {
       isProcessing.value = false;
       stage.value = 'idle';
       waitSecondsLeft.value = 0;
+      pendingCaption.value = '';
       prefetch.clear();
     }
   }
@@ -623,6 +653,9 @@ export const useAppStore = defineStore('app', () => {
     isRegenerating,
     stage,
     waitSecondsLeft,
+    pendingCaption,
+    saveCaptionNow,
+    skipCurrentPhoto,
     savedThisRun,
     limitReached,
     saveLimit,
