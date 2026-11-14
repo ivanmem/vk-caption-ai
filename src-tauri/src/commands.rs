@@ -392,9 +392,13 @@ pub async fn review_caption(
     let client = state.client();
     let image_content_url = fetch_image_data_url(&state, &image_url, &cfg.image_mode).await?;
 
+    // Храним описание построчно, без скобок, поэтому для ревью собираем обратно в JSON-массив:
+    // иначе редактор каждый раз придирается к формату
+    let caption_json = format!("[{}]", caption.trim().trim_matches(|c| c == '[' || c == ']'));
+
     let mut user_text = format!(
         "Правила, по которым составлялось описание:\n{}\n\nПредложенное описание:\n{}\n\nВерни ТОЛЬКО JSON-объект: {{\"ok\": true}} или {{\"ok\": false, \"comment\": \"что именно исправить\"}}.",
-        system_prompt, caption
+        system_prompt, caption_json
     );
 
     if cfg.image_mode == "mixed" || cfg.image_mode == "path" {
