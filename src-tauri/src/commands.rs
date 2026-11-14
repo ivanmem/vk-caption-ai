@@ -2,10 +2,7 @@ use base64::{engine::general_purpose, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::{
-    AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-};
-use tauri_plugin_opener::OpenerExt;
+use tauri::{AppHandle, Manager, State, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_store::StoreExt;
 
 
@@ -759,101 +756,6 @@ fn vk_auth_url(client_id: &str) -> Result<Url, String> {
         "https://oauth.vk.com/authorize?client_id={client_id}&scope=65540&redirect_uri=https://oauth.vk.com/blank.html&display=page&response_type=token&revoke=1"
     ))
     .map_err(|e| e.to_string())
-}
-
-/// Способ vkhost: страницу авторизации открывает браузер пользователя, где он уже
-/// залогинен — в пустом вебвью форма входа VK ID падает с «Unknown method passed».
-///
-/// Браузер идёт не прямо на VK, а на свою страничку на localhost: она отдаёт нам
-/// свой navigator.userAgent (его же потом шлём в API) и уводит на авторизацию.
-#[tauri::command]
-pub async fn vk_auth_in_browser(app: AppHandle, client_id: String) -> Result<(), String> {
-    let auth_url = vk_auth_url(&client_id)?.to_string();
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-
-    let app_handle = app.clone();
-    tokio::spawn(async move {
-        // Браузер успевает сделать два запроса (страница и /ua); больше ждать нечего
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            serve_user_agent_page(listener, auth_url, app_handle),
-        )
-        .await;
-    });
-
-    app.opener()
-        .open_url(format!("http://127.0.0.1:{port}/"), None::<&str>)
-        .map_err(|e| e.to_string())
-}
-
-/// Событие с User-Agent браузера; фронт подставляет его в настройки
-pub const VK_USER_AGENT_EVENT: &str = "vk-user-agent";
-
-async fn serve_user_agent_page(
-    listener: tokio::net::TcpListener,
-    auth_url: String,
-    app: AppHandle,
-) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let auth_js = serde_json::to_string(&auth_url).unwrap_or_else(|_| "\"\"".to_string());
-    let page = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>VK Caption AI</title>\
-         <p>Открываем страницу авторизации ВКонтакте…</p>\
-         <script>fetch('/ua?v='+encodeURIComponent(navigator.userAgent))\
-         .catch(function(){{}}).then(function(){{location.replace({auth_js})}})</script>"
-    );
-
-    loop {
-        let Ok((mut socket, _)) = listener.accept().await else {
-            return;
-        };
-
-        // Chrome шлёт десяток заголовков, а UA в query ещё и percent-encoded
-        let mut buf = [0u8; 8192];
-        let Ok(read) = socket.read(&mut buf).await else {
-            continue;
-        };
-        let request = String::from_utf8_lossy(&buf[..read]);
-        let path = request
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("/")
-            .to_string();
-
-        let response = if let Some(raw) = path.strip_prefix("/ua?v=") {
-            if let Ok(parsed) = Url::parse(&format!("http://local/?v={raw}")) {
-                if let Some((_, ua)) = parsed.query_pairs().find(|(k, _)| k == "v") {
-                    let _ = app.emit(VK_USER_AGENT_EVENT, ua.into_owned());
-                }
-            }
-            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
-        } else {
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                page.len(),
-                page
-            )
-        };
-
-        let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.shutdown().await;
-
-        if path.starts_with("/ua") {
-            return;
-        }
-    }
-}
-
-/// Токен из ссылки, которую пользователь скопировал из адресной строки после входа
-#[tauri::command]
-pub fn vk_token_from_url(url: String) -> Result<String, String> {
-    let url = Url::parse(url.trim()).map_err(|_| "Это не ссылка от VK".to_string())?;
-    token_from_redirect(&url)
 }
 
 /// Вход во ВКонтакте прямо в приложении: токен выдаётся тому же вебвью, чей

@@ -53,18 +53,13 @@ export const DEFAULT_REVIEW_TEMPERATURE = 0.3;
 export const DEFAULT_PREFETCH_COUNT = 1;
 export const DEFAULT_MAX_SAVES_PER_RUN = 50;
 
-/**
- * Приложение «vk.com». В пустом вебвью форма входа VK ID для него падает с
- * «Unknown method passed», поэтому вход — через браузер, где сессия уже есть
- */
+/** Приложение «vk.com»: его ID подставляется в окно входа по умолчанию */
 export const DEFAULT_VK_APP_ID = '6287487';
 
 export interface AppSettings {
   vkToken: string;
   /** ID Standalone-приложения VK для входа прямо из программы */
   vkAppId?: string;
-  /** User-Agent браузера, в котором выдан токен; пусто — UA вебвью приложения */
-  vkUserAgent?: string;
   vkAlbumId: string;
   vkOwnerId: string;
   lmstudioModel: string;
@@ -104,7 +99,6 @@ export const useAppStore = defineStore('app', () => {
   const settings = ref<AppSettings>({
     vkToken: '',
     vkAppId: DEFAULT_VK_APP_ID,
-    vkUserAgent: '',
     vkAlbumId: '',
     vkOwnerId: '',
     lmstudioModel: 'zai-org/glm-4.6v-flash',
